@@ -45,6 +45,7 @@ public final class Uapi {
   static final int EADDRINUSE = 98;
 
   private static final int MAX_REQUEST_LINES = 100_000;
+  private static final int MAX_LINE_LENGTH = 64 * 1024;
 
   private final Device device;
   private final BindFactory bindFactory;
@@ -61,7 +62,7 @@ public final class Uapi {
    */
   public void serve(BufferedReader in, Writer out) throws IOException {
     String op;
-    while ((op = in.readLine()) != null) {
+    while ((op = readLine(in)) != null) {
       if (op.isEmpty()) {
         continue;
       }
@@ -271,7 +272,7 @@ public final class Uapi {
   private static List<String> readUntilBlank(BufferedReader in) throws IOException {
     List<String> lines = new ArrayList<>();
     String line;
-    while ((line = in.readLine()) != null) {
+    while ((line = readLine(in)) != null) {
       if (line.isEmpty()) {
         return lines;
       }
@@ -281,6 +282,23 @@ public final class Uapi {
       lines.add(line);
     }
     return null;
+  }
+
+  /** Reads one line of at most 64 KiB; {@code null} at end of stream. */
+  private static String readLine(BufferedReader in) throws IOException {
+    StringBuilder sb = new StringBuilder();
+    int c;
+    while ((c = in.read()) >= 0) {
+      if (c == '\n') {
+        int end = sb.length();
+        return end > 0 && sb.charAt(end - 1) == '\r' ? sb.substring(0, end - 1) : sb.toString();
+      }
+      if (sb.length() >= MAX_LINE_LENGTH) {
+        throw new IOException("UAPI line longer than " + MAX_LINE_LENGTH + " characters");
+      }
+      sb.append((char) c);
+    }
+    return sb.length() == 0 ? null : sb.toString();
   }
 
   private static String errno(int code) {

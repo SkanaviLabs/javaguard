@@ -161,6 +161,15 @@ class UapiTest {
   }
 
   @Test
+  void rejectsOverlongLines() {
+    String request = "set=1\n" + "x".repeat(70_000) + "\n\n";
+    org.assertj.core.api.Assertions.assertThatThrownBy(
+            () -> uapi.serve(new BufferedReader(new StringReader(request)), new StringWriter()))
+        .isInstanceOf(java.io.IOException.class)
+        .hasMessageContaining("longer than");
+  }
+
+  @Test
   void servesSeveralOperationsPerConnection() throws Exception {
     String request =
         "set=1\npublic_key="

@@ -48,7 +48,7 @@ dependencies {
 
 tasks.test {
     useJUnitPlatform {
-        excludeTags("fuzz", "interop")
+        excludeTags("fuzz", "interop", "soak")
     }
 }
 
@@ -80,6 +80,7 @@ tasks.register<Test>("fuzz") {
         includeTags("fuzz")
     }
     environment("JAZZER_FUZZ", "1")
+    forkEvery = 1 // Jazzer fuzzes only one @FuzzTest per JVM; give each class its own
     providers.gradleProperty("fuzzTarget").orNull?.let { filter.includeTestsMatching(it) }
 }
 
@@ -109,6 +110,23 @@ tasks.register<JavaExec>("jmh") {
     mainClass = "org.openjdk.jmh.Main"
     javaLauncher = javaToolchains.launcherFor(java.toolchain)
     args(providers.gradleProperty("jmh.include").getOrElse(".*"))
+}
+
+// ./gradlew soakTest [-PsoakMinutes=N] runs long stability tests (default 10 minutes).
+tasks.register<Test>("soakTest") {
+    description = "Runs long-running stability tests."
+    group = "verification"
+    testClassesDirs = sourceSets.test.get().output.classesDirs
+    classpath = sourceSets.test.get().runtimeClasspath
+    useJUnitPlatform {
+        includeTags("soak")
+    }
+    outputs.upToDateWhen { false }
+    systemProperty("javaguard.soak.minutes", providers.gradleProperty("soakMinutes").getOrElse("10"))
+    testLogging {
+        events("passed", "skipped", "failed")
+        showStandardStreams = true
+    }
 }
 
 // ./gradlew :<module>:throughput [-Pseconds=N] [-Pjfr=true] runs the module's throughput harness.
