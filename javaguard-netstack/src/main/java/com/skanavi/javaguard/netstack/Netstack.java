@@ -67,6 +67,9 @@ public final class Netstack implements Tun {
   private final boolean ownsScheduler;
   private final long minRtoNanos;
   private final long timeWaitNanos;
+  private final boolean tcpSack;
+  private final BlockingQueue<byte[]> inbound;
+  private final Thread inboundThread;
   private volatile boolean closed;
 
   private record PendingPing(byte[] from, CompletableFuture<Long> reply) {}
@@ -96,6 +99,13 @@ public final class Netstack implements Tun {
     this.ownsScheduler = b.scheduler == null;
     this.minRtoNanos = b.minRto.toNanos();
     this.timeWaitNanos = b.timeWait.toNanos();
+    this.tcpSack = b.tcpSack;
+    // Inbound packets are processed on their own thread, so the device's receive thread can go
+    // back to decrypting while TCP processing runs on another core.
+    this.inbound = new ArrayBlockingQueue<>(b.queueCapacity + 1);
+    this.inboundThread = new Thread(this::inboundLoop, "javaguard-netstack-rx");
+    inboundThread.setDaemon(true);
+    inboundThread.start();
   }
 
   /** Starts building a netstack. */
@@ -113,7 +123,7 @@ public final class Netstack implements Tun {
     return dns;
   }
 
-  /** Packets dropped because the outbound queue was full. */
+  /** Packets dropped because the inbound or outbound queue was full. */
   public long droppedPackets() {
     return dropped.get();
   }
@@ -250,12 +260,33 @@ public final class Netstack implements Tun {
     }
   }
 
+  /** Queues an incoming packet for processing; drops it if the inbound queue is full. */
   @Override
   public void write(byte[] buf, int off, int len) {
+    if (!closed && !inbound.offer(Arrays.copyOfRange(buf, off, off + len))) {
+      dropped.incrementAndGet();
+    }
+  }
+
+  private void inboundLoop() {
+    try {
+      while (true) {
+        byte[] p = inbound.take();
+        if (p == CLOSED) {
+          return;
+        }
+        receive(p, p.length);
+      }
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
+  }
+
+  /** Processes one incoming packet on the calling thread. */
+  void receive(byte[] p, int len) {
     if (closed) {
       return;
     }
-    byte[] p = off == 0 ? buf : Arrays.copyOfRange(buf, off, off + len);
     IpPacket ip = IpPacket.parse(p, len);
     if (ip == null || !isLocal(ip.dst())) {
       return;
@@ -292,6 +323,8 @@ public final class Netstack implements Tun {
     if (ownsScheduler) {
       scheduler.close();
     }
+    inbound.clear();
+    inbound.offer(CLOSED);
     outbound.clear();
     outbound.offer(CLOSED);
   }
@@ -422,6 +455,40 @@ public final class Netstack implements Tun {
       byte[] data,
       int off,
       int len) {
+    sendTcp(
+        src,
+        dst,
+        srcPort,
+        dstPort,
+        seq,
+        ack,
+        flags,
+        window,
+        mss,
+        windowScale,
+        false,
+        null,
+        data,
+        off,
+        len);
+  }
+
+  void sendTcp(
+      byte[] src,
+      byte[] dst,
+      int srcPort,
+      int dstPort,
+      int seq,
+      int ack,
+      int flags,
+      int window,
+      int mss,
+      int windowScale,
+      boolean sackPermitted,
+      int[] sackBlocks,
+      byte[] data,
+      int off,
+      int len) {
     send(
         TcpSegment.build(
             src,
@@ -434,6 +501,8 @@ public final class Netstack implements Tun {
             window,
             mss,
             windowScale,
+            sackPermitted,
+            sackBlocks,
             data,
             off,
             len,
@@ -464,6 +533,10 @@ public final class Netstack implements Tun {
 
   long timeWaitNanos() {
     return timeWaitNanos;
+  }
+
+  boolean tcpSack() {
+    return tcpSack;
   }
 
   int randomInt() {
@@ -560,6 +633,7 @@ public final class Netstack implements Tun {
     private Scheduler scheduler;
     private Duration minRto = Duration.ofMillis(200);
     private Duration timeWait = Duration.ofSeconds(60);
+    private boolean tcpSack = true;
 
     private Builder() {}
 
@@ -629,6 +703,12 @@ public final class Netstack implements Tun {
     /** How long closed TCP connections linger in TIME_WAIT (default 60 s). */
     public Builder tcpTimeWait(Duration timeWait) {
       this.timeWait = timeWait;
+      return this;
+    }
+
+    /** Whether TCP offers and uses SACK (default true); off falls back to NewReno recovery. */
+    public Builder tcpSack(boolean enabled) {
+      this.tcpSack = enabled;
       return this;
     }
 

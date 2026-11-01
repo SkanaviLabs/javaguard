@@ -26,12 +26,15 @@ import java.nio.channels.ClosedChannelException;
 import java.security.InvalidKeyException;
 import java.security.SecureRandom;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReadWriteLock;
@@ -57,7 +60,8 @@ import javax.crypto.AEADBadTagException;
  * }</pre>
  *
  * <p>Threads: one reads the bind, one reads the tun, one processes handshake messages, and one runs
- * timers. Transport encryption and decryption happen inline on the reading threads.
+ * timers. Transport encryption and decryption run on a pool of crypto workers (see {@link
+ * Builder#cryptoThreads(int)}), with packets completed in their original order.
  */
 public final class Device implements Closeable {
   private static final System.Logger LOG = System.getLogger(Device.class.getName());
@@ -88,6 +92,9 @@ public final class Device implements Closeable {
   volatile Noise noise;
   private volatile CookieChecker cookieChecker;
 
+  private final ExecutorService cryptoWorkers;
+  final CryptoPipeline encryptPipeline;
+  private final CryptoPipeline decryptPipeline;
   private final Executor handshakeExecutor;
   private final ThreadPoolExecutor handshakePool;
   private final boolean manual;
@@ -124,6 +131,17 @@ public final class Device implements Closeable {
               r -> daemon(r, "javaguard-handshake"),
               new ThreadPoolExecutor.DiscardPolicy());
       this.handshakeExecutor = handshakePool;
+    }
+    int cryptoThreads = manual ? 0 : b.cryptoThreads;
+    if (cryptoThreads > 0) {
+      this.cryptoWorkers =
+          Executors.newFixedThreadPool(cryptoThreads, r -> daemon(r, "javaguard-crypto"));
+      this.encryptPipeline = new CryptoPipeline(cryptoWorkers, 4096, "javaguard-encrypt");
+      this.decryptPipeline = new CryptoPipeline(cryptoWorkers, 4096, "javaguard-decrypt");
+    } else {
+      this.cryptoWorkers = null;
+      this.encryptPipeline = null;
+      this.decryptPipeline = null;
     }
     StaticIdentity identity = new StaticIdentity(b.privateKey);
     this.noise = new Noise(identity, indices, time, random);
@@ -314,6 +332,11 @@ public final class Device implements Closeable {
     if (handshakePool != null) {
       handshakePool.shutdownNow();
     }
+    if (cryptoWorkers != null) {
+      encryptPipeline.close();
+      decryptPipeline.close();
+      cryptoWorkers.shutdownNow();
+    }
     for (Peer peer : peers.values()) {
       peer.stop();
     }
@@ -420,6 +443,25 @@ public final class Device implements Closeable {
     }
     long counter = Transport.counter(buf, off);
     byte[] plaintext = new byte[len - Transport.MIN_LENGTH];
+    if (decryptPipeline == null) {
+      if (open(keypair, counter, buf, off, len, plaintext)) {
+        deliverTransport(session, counter, from, plaintext, len);
+      }
+      return;
+    }
+    byte[] copy = Arrays.copyOfRange(buf, off, off + len); // buf is reused by the receive loop
+    boolean[] ok = new boolean[1];
+    decryptPipeline.submit(
+        () -> ok[0] = open(keypair, counter, copy, 0, len, plaintext),
+        () -> {
+          if (ok[0]) {
+            deliverTransport(session, counter, from, plaintext, len);
+          }
+        });
+  }
+
+  private boolean open(
+      Keypair keypair, long counter, byte[] buf, int off, int len, byte[] plaintext) {
     try {
       aead()
           .open(
@@ -431,13 +473,18 @@ public final class Device implements Closeable {
               plaintext,
               0,
               null);
+      return true;
     } catch (AEADBadTagException e) {
-      return;
+      return false;
     }
-    if (!session.replay.accept(counter, Protocol.REJECT_AFTER_MESSAGES)) {
-      return;
+  }
+
+  /** In order, after decryption: replay check, then hand to the peer. */
+  private void deliverTransport(
+      Session session, long counter, InetSocketAddress from, byte[] plaintext, int len) {
+    if (session.replay.accept(counter, Protocol.REJECT_AFTER_MESSAGES)) {
+      session.peer.receiveTransport(session, from, plaintext, len);
     }
-    session.peer.receiveTransport(session, from, plaintext, len);
   }
 
   private void processHandshake(byte[] packet, int type, InetSocketAddress from) {
@@ -560,8 +607,22 @@ public final class Device implements Closeable {
     private SecureRandom random = new SecureRandom();
     private RandomGenerator jitter = RandomGenerator.getDefault();
     private Executor handshakeExecutor;
+    private int cryptoThreads =
+        Math.max(1, Math.min(4, Runtime.getRuntime().availableProcessors() / 2));
 
     private Builder() {}
+
+    /**
+     * Number of threads encrypting and decrypting transport packets (default: half the processors,
+     * 1..4). Zero runs crypto inline on the I/O threads.
+     */
+    public Builder cryptoThreads(int threads) {
+      if (threads < 0) {
+        throw new IllegalArgumentException("cryptoThreads must be >= 0");
+      }
+      this.cryptoThreads = threads;
+      return this;
+    }
 
     /** The local private key (required). */
     public Builder privateKey(PrivateKey key) {

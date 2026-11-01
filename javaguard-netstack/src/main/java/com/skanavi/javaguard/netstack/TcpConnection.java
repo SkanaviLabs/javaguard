@@ -23,11 +23,14 @@ import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * One TCP connection (RFC 9293): the state machine, send and receive buffers, retransmission with
- * RFC 6298 timers, NewReno congestion control (RFC 5681, RFC 6582), window scaling (RFC 7323),
- * zero-window probing, and RFC 5961 protection against blind RST and SYN injection.
+ * RFC 6298 timers, congestion control (RFC 5681) with SACK-based loss recovery (RFC 2018, RFC 6675)
+ * or NewReno (RFC 6582) when the peer lacks SACK, window scaling (RFC 7323), zero-window probing,
+ * keepalives, and RFC 5961 protection against blind RST and SYN injection.
  *
  * <p>Inbound segments, application calls and timers all run under one lock; outgoing packets are
- * only queued while it is held. Delayed ACKs, SACK, timestamps and keepalives are not implemented.
+ * only queued while it is held. ACKs are delayed (RFC 9293 3.8.6.3): every second full-sized
+ * segment is acknowledged at once, as are short, out-of-order and gap-filling segments, and
+ * anything else within 40 ms.
  */
 final class TcpConnection {
   enum State {
@@ -52,6 +55,10 @@ final class TcpConnection {
   private static final long FIN_WAIT_2_TIMEOUT = TimeUnit.SECONDS.toNanos(60);
   private static final int MAX_OUT_OF_ORDER_SEGMENTS = 512;
   private static final int MAX_CWND = 64 * 1024 * 1024;
+  private static final long DELAYED_ACK = TimeUnit.MILLISECONDS.toNanos(40);
+  private static final int MAX_SACK_BLOCKS = 4;
+  private static final long MAX_KEEPALIVE_INTERVAL = TimeUnit.SECONDS.toNanos(75);
+  private static final int KEEPALIVE_PROBES = 9;
 
   private record Pending(int seq, byte[] data) {}
 
@@ -66,6 +73,7 @@ final class TcpConnection {
   private State state;
   private IOException error;
   private boolean peerOfferedWindowScale;
+  private boolean sackOk;
 
   // Send side.
   private final ByteRing sendBuffer = new ByteRing(BUFFER_SIZE);
@@ -90,6 +98,8 @@ final class TcpConnection {
   private int dupAcks;
   private boolean inRecovery;
   private int recover;
+  private final List<int[]> scoreboard = new ArrayList<>(); // SACKed [left, right), sorted, merged
+  private int rtxNext; // next sequence number SACK recovery may retransmit
 
   // Round-trip estimation.
   private long srtt = -1;
@@ -111,10 +121,16 @@ final class TcpConnection {
   private int pendingFinSeq;
   private boolean eof;
   private boolean inputClosed;
+  private int lastOutOfOrderSeq;
 
   private final TcpTimer retransmitTimer;
   private final TcpTimer persistTimer;
   private final TcpTimer lingerTimer;
+  private final TcpTimer delayedAckTimer;
+  private int segmentsUnacked;
+  private final TcpTimer keepaliveTimer;
+  private long keepaliveIdle;
+  private int keepaliveProbes;
 
   /** Creates an actively opening connection; call {@link #connect(long)}. */
   TcpConnection(Netstack stack, TcpKey key) {
@@ -155,6 +171,8 @@ final class TcpConnection {
     this.retransmitTimer = new TcpTimer(stack.scheduler(), this::onRetransmitTimeout);
     this.persistTimer = new TcpTimer(stack.scheduler(), this::onPersistTimeout);
     this.lingerTimer = new TcpTimer(stack.scheduler(), this::onLingerTimeout);
+    this.delayedAckTimer = new TcpTimer(stack.scheduler(), this::onDelayedAck);
+    this.keepaliveTimer = new TcpTimer(stack.scheduler(), this::onKeepalive);
   }
 
   // ---------------------------------------------------------------- application side
@@ -308,6 +326,25 @@ final class TcpConnection {
     }
   }
 
+  /**
+   * Probes an idle connection after {@code idleNanos} without traffic, every min(idle, 75 s), and
+   * resets it after 9 unanswered probes. Zero turns keepalives off.
+   */
+  void keepAlive(long idleNanos) {
+    lock.lock();
+    try {
+      keepaliveIdle = idleNanos;
+      keepaliveProbes = 0;
+      if (idleNanos > 0) {
+        keepaliveTimer.start(idleNanos);
+      } else {
+        keepaliveTimer.stop();
+      }
+    } finally {
+      lock.unlock();
+    }
+  }
+
   /** Resets the connection immediately. */
   void abort() {
     lock.lock();
@@ -395,6 +432,10 @@ final class TcpConnection {
   void onSegment(TcpSegment seg) {
     lock.lock();
     try {
+      if (keepaliveIdle > 0) {
+        keepaliveProbes = 0;
+        keepaliveTimer.start(keepaliveIdle);
+      }
       switch (state) {
         case CLOSED -> {}
         case SYN_SENT -> synSent(seg);
@@ -446,6 +487,7 @@ final class TcpConnection {
     }
     cwnd = 10 * sndMss;
     peerOfferedWindowScale = syn.windowScale() >= 0;
+    sackOk = syn.sackPermitted() && stack.tcpSack();
     if (peerOfferedWindowScale) {
       sndWindowScale = syn.windowScale();
       rcvWindowScale = WINDOW_SCALE;
@@ -553,6 +595,9 @@ final class TcpConnection {
       return false;
     }
     int previousWindow = sndWnd;
+    if (sackOk && seg.sackBlocks() != null) {
+      updateScoreboard(seg.sackBlocks());
+    }
     if (lt(sndUna, ack)) {
       int acked = ack - sndUna;
       onNewAck(ack, acked);
@@ -603,12 +648,15 @@ final class TcpConnection {
     if (lt(sndNxt, ack)) {
       sndNxt = ack; // after a go-back, the peer had more than we resent
     }
+    pruneScoreboard();
     retries = 0;
     if (inRecovery) {
       if (!lt(ack, recover)) {
         cwnd = Math.max(ssthresh, sndMss); // full acknowledgment: leave fast recovery
         inRecovery = false;
         dupAcks = 0;
+      } else if (sackOk) {
+        sackRecoverySend(); // partial acknowledgment: keep filling holes (RFC 6675)
       } else {
         retransmitFirst(); // partial acknowledgment (RFC 6582)
         cwnd = Math.max(cwnd - acked + sndMss, sndMss);
@@ -632,8 +680,12 @@ final class TcpConnection {
 
   private void onDuplicateAck() {
     dupAcks++;
-    if (inRecovery) {
+    if (inRecovery && sackOk) {
+      sackRecoverySend();
+    } else if (inRecovery) {
       cwnd = Math.min(cwnd + sndMss, MAX_CWND);
+    } else if (dupAcks == 3 && sackOk) {
+      enterSackRecovery();
     } else if (dupAcks == 3) {
       ssthresh = Math.max((sndMax - sndUna) / 2, 2 * sndMss);
       recover = sndMax;
@@ -642,6 +694,162 @@ final class TcpConnection {
       retransmitFirst();
       cwnd = ssthresh + 3 * sndMss;
     }
+  }
+
+  // ---------------------------------------------------------------- SACK (sender)
+
+  private void updateScoreboard(int[] blocks) {
+    for (int b = 0; b + 1 < blocks.length; b += 2) {
+      int left = blocks[b];
+      int right = blocks[b + 1];
+      if (!lt(left, right) || !lt(sndUna, right) || lt(sndMax, right)) {
+        continue; // empty, already acknowledged, or beyond what we sent
+      }
+      insertSacked(lt(left, sndUna) ? sndUna : left, right);
+    }
+  }
+
+  private void insertSacked(int left, int right) {
+    List<int[]> merged = new ArrayList<>(scoreboard.size() + 1);
+    boolean placed = false;
+    for (int[] r : scoreboard) {
+      if (lt(r[1], left)) {
+        merged.add(r);
+      } else if (lt(right, r[0])) {
+        if (!placed) {
+          merged.add(new int[] {left, right});
+          placed = true;
+        }
+        merged.add(r);
+      } else {
+        left = lt(r[0], left) ? r[0] : left;
+        right = lt(right, r[1]) ? r[1] : right;
+      }
+    }
+    if (!placed) {
+      merged.add(new int[] {left, right});
+    }
+    scoreboard.clear();
+    scoreboard.addAll(merged);
+  }
+
+  private void pruneScoreboard() {
+    scoreboard.removeIf(r -> le(r[1], sndUna));
+    if (!scoreboard.isEmpty() && lt(scoreboard.get(0)[0], sndUna)) {
+      scoreboard.get(0)[0] = sndUna;
+    }
+  }
+
+  private int sackedBytes() {
+    int total = 0;
+    for (int[] r : scoreboard) {
+      total += r[1] - r[0];
+    }
+    return total;
+  }
+
+  /** The first un-SACKed range at or after {@code from} and below the highest SACKed byte. */
+  private int[] nextHole(int from) {
+    int start = lt(from, sndUna) ? sndUna : from;
+    for (int[] r : scoreboard) {
+      if (le(r[1], start)) {
+        continue;
+      }
+      if (lt(start, r[0])) {
+        return new int[] {start, r[0]};
+      }
+      start = r[1];
+    }
+    return null;
+  }
+
+  /** RFC 6675 pipe: outstanding bytes minus SACKed ones and holes not yet retransmitted. */
+  private int pipe() {
+    int lost = 0;
+    int from = rtxNext;
+    for (int[] hole = nextHole(from); hole != null; hole = nextHole(hole[1])) {
+      lost += hole[1] - hole[0];
+    }
+    return (sndMax - sndUna) - sackedBytes() - lost;
+  }
+
+  private void enterSackRecovery() {
+    ssthresh = Math.max((sndMax - sndUna) / 2, 2 * sndMss); // RFC 5681: FlightSize / 2
+    cwnd = ssthresh;
+    recover = sndMax;
+    inRecovery = true;
+    rttTiming = false;
+    rtxNext = sndUna;
+    // RFC 6675 section 5 step 4: the first presumed-lost segment goes out at once, whatever the
+    // pipe; later retransmissions and new data wait for the pipe to drain below cwnd.
+    int[] hole = nextHole(sndUna);
+    int start = hole == null ? sndUna : hole[0];
+    int dataEnd = sndUna + Math.min(sendBuffer.size(), sndMax - sndUna);
+    int len = Math.min(sndMss, (hole == null ? dataEnd : hole[1]) - start);
+    if (len > 0 && lt(start, dataEnd)) {
+      len = Math.min(len, dataEnd - start);
+      byte[] chunk = new byte[len];
+      sendBuffer.peek(start - sndUna, chunk, 0, len);
+      transmit(start, ACK | PSH, chunk, 0, len);
+      rtxNext = start + len;
+    } else {
+      retransmitFirst();
+    }
+    sackRecoverySend();
+  }
+
+  /** Retransmits holes while the pipe allows, then lets {@link #output()} send new data. */
+  private void sackRecoverySend() {
+    while (pipe() < cwnd) {
+      int[] hole = nextHole(rtxNext);
+      if (hole == null) {
+        break;
+      }
+      int dataEnd = sndUna + Math.min(sendBuffer.size(), sndMax - sndUna);
+      int len = Math.min(Math.min(sndMss, hole[1] - hole[0]), dataEnd - hole[0]);
+      if (len <= 0) {
+        break;
+      }
+      byte[] chunk = new byte[len];
+      sendBuffer.peek(hole[0] - sndUna, chunk, 0, len);
+      transmit(hole[0], ACK | PSH, chunk, 0, len);
+      rtxNext = hole[0] + len;
+      retransmitTimer.startIfIdle(rto);
+    }
+    output();
+  }
+
+  /** SACK blocks describing queued out-of-order data, the most recently received first. */
+  private int[] receiverSackBlocks() {
+    List<int[]> ranges = new ArrayList<>();
+    List<Pending> sorted = new ArrayList<>(outOfOrder);
+    sorted.sort((a, b) -> Integer.compare(a.seq() - rcvNxt, b.seq() - rcvNxt));
+    for (Pending p : sorted) {
+      int left = p.seq();
+      int right = p.seq() + p.data().length;
+      int[] last = ranges.isEmpty() ? null : ranges.get(ranges.size() - 1);
+      if (last != null && le(left, last[1])) {
+        if (lt(last[1], right)) {
+          last[1] = right;
+        }
+      } else {
+        ranges.add(new int[] {left, right});
+      }
+    }
+    for (int i = 0; i < ranges.size(); i++) {
+      int[] r = ranges.get(i);
+      if (le(r[0], lastOutOfOrderSeq) && lt(lastOutOfOrderSeq, r[1])) {
+        ranges.add(0, ranges.remove(i));
+        break;
+      }
+    }
+    int n = Math.min(ranges.size(), MAX_SACK_BLOCKS);
+    int[] blocks = new int[2 * n];
+    for (int i = 0; i < n; i++) {
+      blocks[2 * i] = ranges.get(i)[0];
+      blocks[2 * i + 1] = ranges.get(i)[1];
+    }
+    return blocks;
   }
 
   private void updateWindow(TcpSegment seg, boolean force) {
@@ -673,6 +881,7 @@ final class TcpConnection {
       seq = rcvNxt;
     }
     int window = receiveBuffer.free();
+    boolean ackNow;
     if (seq == rcvNxt) {
       int n = Math.min(len, window);
       receiveBuffer.write(data, off, n);
@@ -680,6 +889,7 @@ final class TcpConnection {
       if (n < len) {
         fin = false; // FIN lies beyond what we accepted
       }
+      boolean hadGap = !outOfOrder.isEmpty();
       drainOutOfOrder();
       if (fin) {
         finReceived();
@@ -689,6 +899,8 @@ final class TcpConnection {
       if (n > 0) {
         changed.signalAll();
       }
+      boolean fullSized = n >= Math.min(sndMss, ourMss);
+      ackNow = hadGap || eof || !fullSized || n < len || ++segmentsUnacked >= 2;
     } else {
       int rel = seq - rcvNxt;
       if (rel < window && outOfOrder.size() < MAX_OUT_OF_ORDER_SEGMENTS) {
@@ -696,13 +908,19 @@ final class TcpConnection {
         byte[] copy = new byte[n];
         System.arraycopy(data, off, copy, 0, n);
         outOfOrder.add(new Pending(seq, copy));
+        lastOutOfOrderSeq = seq;
         if (fin && n == len) {
           pendingFin = true;
           pendingFinSeq = seq + n;
         }
       }
+      ackNow = true; // duplicate ACK signals the gap to the sender
     }
-    sendAck();
+    if (ackNow) {
+      sendAck();
+    } else {
+      delayedAckTimer.startIfIdle(DELAYED_ACK);
+    }
   }
 
   private void drainOutOfOrder() {
@@ -772,7 +990,8 @@ final class TcpConnection {
       int sentData = Math.min(flightSize(), sendBuffer.size());
       int unsent = sendBuffer.size() - sentData;
       if (unsent > 0) {
-        int usable = Math.min(cwnd, sndWnd) - flightSize();
+        int inFlight = inRecovery && sackOk ? pipe() : flightSize();
+        int usable = Math.min(cwnd - inFlight, sndWnd - flightSize());
         if (usable <= 0) {
           if (sndWnd == 0 && flightSize() == 0) {
             persistTimer.startIfIdle(rto);
@@ -851,7 +1070,14 @@ final class TcpConnection {
     int mss = syn ? ourMss : -1;
     int windowScale =
         syn && (state == State.SYN_SENT || peerOfferedWindowScale) ? WINDOW_SCALE : -1;
+    boolean sackPermitted = syn && stack.tcpSack() && (state == State.SYN_SENT || sackOk);
+    int[] sackBlocks =
+        !syn && sackOk && (flags & ACK) != 0 && !outOfOrder.isEmpty() ? receiverSackBlocks() : null;
     int ack = (flags & ACK) != 0 ? rcvNxt : 0;
+    if ((flags & ACK) != 0) {
+      segmentsUnacked = 0;
+      delayedAckTimer.stop();
+    }
     stack.sendTcp(
         localIp,
         remoteIp,
@@ -863,6 +1089,8 @@ final class TcpConnection {
         window,
         mss,
         windowScale,
+        sackPermitted,
+        sackBlocks,
         data,
         off,
         len);
@@ -911,6 +1139,7 @@ final class TcpConnection {
           dupAcks = 0;
           rttTiming = false;
           rto = Math.min(rto * 2, MAX_RTO);
+          scoreboard.clear(); // RFC 2018 section 8: the receiver may have reneged
           sndNxt = sndUna; // go back and resend from the first unacknowledged byte
           output();
           retransmitTimer.startIfIdle(rto);
@@ -930,6 +1159,35 @@ final class TcpConnection {
       transmit(sndUna - 1, ACK, null, 0, 0); // zero-window probe: elicits an ACK with the window
       persistBackoff = persistBackoff == 0 ? rto : Math.min(persistBackoff * 2, MAX_RTO);
       persistTimer.start(persistBackoff);
+    } finally {
+      lock.unlock();
+    }
+  }
+
+  private void onDelayedAck() {
+    lock.lock();
+    try {
+      if (segmentsUnacked > 0 && state != State.CLOSED && state != State.TIME_WAIT) {
+        sendAck();
+      }
+    } finally {
+      lock.unlock();
+    }
+  }
+
+  private void onKeepalive() {
+    lock.lock();
+    try {
+      if (keepaliveIdle <= 0 || (state != State.ESTABLISHED && state != State.CLOSE_WAIT)) {
+        return;
+      }
+      if (keepaliveProbes >= KEEPALIVE_PROBES) {
+        abortLocked(new SocketTimeoutException("keepalive timed out"));
+        return;
+      }
+      transmit(sndUna - 1, ACK, null, 0, 0); // elicits an ACK from a live peer
+      keepaliveProbes++;
+      keepaliveTimer.start(Math.min(keepaliveIdle, MAX_KEEPALIVE_INTERVAL));
     } finally {
       lock.unlock();
     }
@@ -963,6 +1221,8 @@ final class TcpConnection {
     retransmitTimer.stop();
     persistTimer.stop();
     lingerTimer.stop();
+    delayedAckTimer.stop();
+    keepaliveTimer.stop();
     stack.removeTcp(key, this);
     if (listener != null && halfOpen) {
       listener.halfOpenClosed();

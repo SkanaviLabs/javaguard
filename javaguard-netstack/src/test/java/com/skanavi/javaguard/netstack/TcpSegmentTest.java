@@ -44,6 +44,17 @@ class TcpSegmentTest {
   }
 
   @Test
+  void carriesSackOptions() {
+    int[] blocks = {100, 200, 300, 400};
+    byte[] p =
+        TcpSegment.build(
+            A, B, 1, 2, 3, 4, TcpSegment.ACK, 100, -1, -1, true, blocks, null, 0, 0, 1);
+    TcpSegment s = TcpSegment.parse(IpPacket.parse(p, p.length));
+    assertThat(s.sackPermitted()).isTrue();
+    assertThat(s.sackBlocks()).containsExactly(100, 200, 300, 400);
+  }
+
+  @Test
   void rejectsCorruption() {
     byte[] p =
         TcpSegment.build(A, B, 1, 2, 3, 4, TcpSegment.ACK, 100, -1, -1, new byte[10], 0, 10, 1);

@@ -4,8 +4,8 @@
 package com.skanavi.javaguard.netstack;
 
 /**
- * A parsed TCP segment (RFC 9293), and builders for outgoing segments. Understands the MSS and
- * window-scale options; other options are skipped.
+ * A parsed TCP segment (RFC 9293), and builders for outgoing segments. Understands the MSS,
+ * window-scale, SACK-permitted and SACK options (RFC 7323, RFC 2018); other options are skipped.
  *
  * @param srcPort source port
  * @param dstPort destination port
@@ -15,6 +15,8 @@ package com.skanavi.javaguard.netstack;
  * @param window the raw (unscaled) window field
  * @param mss the MSS option value, or -1
  * @param windowScale the window-scale option shift, or -1
+ * @param sackPermitted whether the SACK-permitted option was present
+ * @param sackBlocks SACK blocks as {@code [left0, right0, left1, right1, ...]}, or {@code null}
  * @param data the buffer holding the payload
  * @param dataOffset payload start in {@code data}
  * @param dataLength payload length
@@ -28,6 +30,8 @@ record TcpSegment(
     int window,
     int mss,
     int windowScale,
+    boolean sackPermitted,
+    int[] sackBlocks,
     byte[] data,
     int dataOffset,
     int dataLength) {
@@ -65,6 +69,8 @@ record TcpSegment(
     }
     int mss = -1;
     int windowScale = -1;
+    boolean sackPermitted = false;
+    int[] sackBlocks = null;
     for (int i = off + HEADER; i < off + headerLength; ) {
       int kind = p[i] & 0xff;
       if (kind == 0) {
@@ -85,6 +91,13 @@ record TcpSegment(
         mss = IpPacket.u16(p, i + 2);
       } else if (kind == 3 && optLen == 3) {
         windowScale = Math.min(p[i + 2] & 0xff, 14);
+      } else if (kind == 4 && optLen == 2) {
+        sackPermitted = true;
+      } else if (kind == 5 && optLen >= 10 && (optLen - 2) % 8 == 0) {
+        sackBlocks = new int[(optLen - 2) / 4];
+        for (int b = 0; b < sackBlocks.length; b++) {
+          sackBlocks[b] = u32(p, i + 2 + 4 * b);
+        }
       }
       i += optLen;
     }
@@ -97,17 +110,14 @@ record TcpSegment(
         IpPacket.u16(p, off + 14),
         mss,
         windowScale,
+        sackPermitted,
+        sackBlocks,
         p,
         off + headerLength,
         len - headerLength);
   }
 
-  /**
-   * Builds a complete IP packet carrying one TCP segment.
-   *
-   * @param mss MSS option to include, or -1
-   * @param windowScale window-scale option to include, or -1
-   */
+  /** Builds a segment with at most the MSS and window-scale options. */
   static byte[] build(
       byte[] src,
       byte[] dst,
@@ -123,7 +133,53 @@ record TcpSegment(
       int payloadOffset,
       int payloadLength,
       int ipv4Id) {
-    int optionsLength = (mss >= 0 ? 4 : 0) + (windowScale >= 0 ? 4 : 0);
+    return build(
+        src,
+        dst,
+        srcPort,
+        dstPort,
+        seq,
+        ack,
+        flags,
+        window,
+        mss,
+        windowScale,
+        false,
+        null,
+        payload,
+        payloadOffset,
+        payloadLength,
+        ipv4Id);
+  }
+
+  /**
+   * Builds a complete IP packet carrying one TCP segment.
+   *
+   * @param mss MSS option to include, or -1
+   * @param windowScale window-scale option to include, or -1
+   * @param sackPermitted whether to include SACK-permitted (SYN segments)
+   * @param sackBlocks SACK blocks to include ({@code [left, right, ...]}, at most 4), or null
+   */
+  static byte[] build(
+      byte[] src,
+      byte[] dst,
+      int srcPort,
+      int dstPort,
+      int seq,
+      int ack,
+      int flags,
+      int window,
+      int mss,
+      int windowScale,
+      boolean sackPermitted,
+      int[] sackBlocks,
+      byte[] payload,
+      int payloadOffset,
+      int payloadLength,
+      int ipv4Id) {
+    int sackLength = sackBlocks == null ? 0 : 4 + 4 * sackBlocks.length;
+    int optionsLength =
+        (mss >= 0 ? 4 : 0) + (windowScale >= 0 ? 4 : 0) + (sackPermitted ? 4 : 0) + sackLength;
     int headerLength = HEADER + optionsLength;
     int tcpLength = headerLength + payloadLength;
     byte[] p = IpPacket.build(src, dst, IpPacket.TCP, tcpLength, ipv4Id);
@@ -148,6 +204,24 @@ record TcpSegment(
       p[o + 2] = 3;
       p[o + 3] = (byte) windowScale;
       o += 4;
+    }
+    if (sackPermitted) {
+      p[o] = 1;
+      p[o + 1] = 1;
+      p[o + 2] = 4;
+      p[o + 3] = 2;
+      o += 4;
+    }
+    if (sackBlocks != null) {
+      p[o] = 1;
+      p[o + 1] = 1;
+      p[o + 2] = 5;
+      p[o + 3] = (byte) (2 + 4 * sackBlocks.length);
+      o += 4;
+      for (int edge : sackBlocks) {
+        put32(p, o, edge);
+        o += 4;
+      }
     }
     if (payloadLength > 0) {
       System.arraycopy(payload, payloadOffset, p, o, payloadLength);

@@ -35,15 +35,20 @@ class TcpTest {
   private Netstack server;
 
   private void start(double loss, double reorder, double duplicate) {
-    client = stack("10.0.0.1/24", "fd00::1/64");
-    server = stack("10.0.0.2/24", "fd00::2/64");
+    start(loss, reorder, duplicate, true);
+  }
+
+  private void start(double loss, double reorder, double duplicate, boolean sack) {
+    client = stack("10.0.0.1/24", "fd00::1/64", sack);
+    server = stack("10.0.0.2/24", "fd00::2/64", sack);
     new LossyWire(loss, reorder, duplicate).connect(client, server, 42);
   }
 
-  private static Netstack stack(String v4, String v6) {
+  private static Netstack stack(String v4, String v6, boolean sack) {
     return Netstack.builder()
         .address(v4)
         .address(v6)
+        .tcpSack(sack)
         .tcpMinRto(Duration.ofMillis(50))
         .tcpTimeWait(Duration.ofMillis(200))
         .build();
@@ -76,11 +81,21 @@ class TcpTest {
     }
   }
 
-  @ParameterizedTest(name = "loss={0} reorder={1} duplicate={2}")
-  @CsvSource({"0, 0, 0", "0.01, 0, 0", "0.05, 0, 0", "0, 0.1, 0", "0, 0, 0.05", "0.02, 0.05, 0.02"})
-  void bulkTransferBothWaysSurvivesImpairments(double loss, double reorder, double duplicate)
-      throws Exception {
-    start(loss, reorder, duplicate);
+  @ParameterizedTest(name = "loss={0} reorder={1} duplicate={2} sack={3}")
+  @CsvSource({
+    "0, 0, 0, true",
+    "0.01, 0, 0, true",
+    "0.05, 0, 0, true",
+    "0, 0.1, 0, true",
+    "0, 0, 0.05, true",
+    "0.02, 0.05, 0.02, true",
+    "0.01, 0, 0, false",
+    "0.05, 0, 0, false",
+    "0.02, 0.05, 0.02, false"
+  })
+  void bulkTransferBothWaysSurvivesImpairments(
+      double loss, double reorder, double duplicate, boolean sack) throws Exception {
+    start(loss, reorder, duplicate, sack);
     int size = loss == 0 && reorder == 0 && duplicate == 0 ? 16 << 20 : 4 << 20;
     byte[] upload = random(size, 1);
     byte[] download = random(size, 2);
@@ -108,8 +123,33 @@ class TcpTest {
       assertThat(sha256(srv.get(60, TimeUnit.SECONDS))).isEqualTo(sha256(upload));
       double seconds = (System.nanoTime() - start) / 1e9;
       System.out.printf(
-          "loss=%s reorder=%s dup=%s: 2 x %d MiB in %.2f s (%.1f Mbit/s each way)%n",
-          loss, reorder, duplicate, size >> 20, seconds, size * 8 / seconds / 1e6);
+          "loss=%s reorder=%s dup=%s sack=%s: 2 x %d MiB in %.2f s (%.1f Mbit/s each way)%n",
+          loss, reorder, duplicate, sack, size >> 20, seconds, size * 8 / seconds / 1e6);
+    }
+  }
+
+  @ParameterizedTest(name = "sack={0}")
+  @CsvSource({"true", "false"})
+  void lossOverALongRoundTrip(boolean sack) throws Exception {
+    client = stack("10.0.0.1/24", "fd00::1/64", sack);
+    server = stack("10.0.0.2/24", "fd00::2/64", sack);
+    new LossyWire(0.02, 0, 0, Duration.ofMillis(10)).connect(client, server, 5);
+    byte[] data = random(512 * 1024, 6);
+    try (TcpListener l = server.listenTcp(7)) {
+      CompletableFuture<byte[]> srv =
+          CompletableFuture.supplyAsync(
+              () -> {
+                try (TcpSocket s = l.accept()) {
+                  return s.inputStream().readAllBytes();
+                } catch (IOException e) {
+                  throw new RuntimeException(e);
+                }
+              });
+      try (TcpSocket s = client.connectTcp(at("10.0.0.2", 7), CONNECT)) {
+        s.outputStream().write(data);
+        s.shutdownOutput();
+        assertThat(sha256(srv.get(60, TimeUnit.SECONDS))).isEqualTo(sha256(data));
+      }
     }
   }
 
@@ -286,6 +326,29 @@ class TcpTest {
     assertThatThrownBy(() -> waiting.get(5, TimeUnit.SECONDS))
         .hasRootCauseInstanceOf(SocketException.class);
     server.listenTcp(7).close(); // port is free again
+  }
+
+  @Test
+  void keepaliveDetectsADeadPeer() throws Exception {
+    client = stack("10.0.0.1/24", "fd00::1/64", true);
+    server = stack("10.0.0.2/24", "fd00::2/64", true);
+    LossyWire wire = new LossyWire(0, 0, 0).connect(client, server, 1);
+    try (TcpListener l = server.listenTcp(7);
+        TcpSocket s = client.connectTcp(at("10.0.0.2", 7), CONNECT)) {
+      TcpSocket peer = l.accept(Duration.ofSeconds(5));
+      s.keepAlive(Duration.ofMillis(50));
+      Thread.sleep(400); // live peer answers the probes
+      assertThat(s.isOpen()).isTrue();
+      server.close(); // the peer disappears without a FIN
+      long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+      while (s.isOpen() && System.nanoTime() < deadline) {
+        Thread.sleep(20);
+      }
+      assertThat(s.isOpen()).isFalse();
+      assertThatThrownBy(() -> s.inputStream().read()).hasMessageContaining("keepalive");
+      assertThat(wire.delivered.get()).isPositive();
+      peer.abort();
+    }
   }
 
   @Test

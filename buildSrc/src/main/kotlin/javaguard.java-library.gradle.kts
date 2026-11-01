@@ -111,6 +111,25 @@ tasks.register<JavaExec>("jmh") {
     args(providers.gradleProperty("jmh.include").getOrElse(".*"))
 }
 
+// ./gradlew :<module>:throughput [-Pseconds=N] [-Pjfr=true] runs the module's throughput harness.
+val throughputMain = mapOf(
+    "javaguard-core" to "com.skanavi.javaguard.core.DeviceThroughput",
+    "javaguard-netstack" to "com.skanavi.javaguard.netstack.TcpThroughput",
+)[project.name]
+if (throughputMain != null) {
+    tasks.register<JavaExec>("throughput") {
+        description = "Runs the end-to-end throughput harness."
+        group = "benchmark"
+        classpath = jmhSourceSet.runtimeClasspath
+        mainClass = throughputMain
+        javaLauncher = javaToolchains.launcherFor(java.toolchain)
+        args(providers.gradleProperty("seconds").getOrElse("10"))
+        if (providers.gradleProperty("jfr").isPresent) {
+            jvmArgs("-XX:StartFlightRecording=filename=${layout.buildDirectory.get()}/throughput.jfr,settings=profile")
+        }
+    }
+}
+
 // ---- Formatting ----
 
 spotless {

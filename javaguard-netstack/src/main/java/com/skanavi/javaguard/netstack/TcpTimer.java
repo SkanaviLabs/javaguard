@@ -5,12 +5,17 @@ package com.skanavi.javaguard.netstack;
 
 import com.skanavi.javaguard.core.Scheduler;
 
-/** A restartable one-shot timer; stale firings are suppressed by a generation check. */
+/**
+ * A restartable one-shot timer that tolerates being restarted on every packet. It keeps a deadline
+ * and only touches the scheduler when no task is queued or the deadline moves earlier; a task that
+ * fires before the deadline reschedules itself for the remainder.
+ */
 final class TcpTimer {
   private final Scheduler scheduler;
   private final Runnable action;
   private Scheduler.Task task;
-  private long generation;
+  private long taskDue;
+  private long deadline;
   private boolean pending;
 
   TcpTimer(Scheduler scheduler, Runnable action) {
@@ -19,12 +24,12 @@ final class TcpTimer {
   }
 
   synchronized void start(long delayNanos) {
-    if (task != null) {
-      task.cancel();
-    }
-    long gen = ++generation;
+    long now = System.nanoTime();
+    deadline = now + Math.max(0, delayNanos);
     pending = true;
-    task = scheduler.schedule(() -> fire(gen), Math.max(0, delayNanos));
+    if (task == null || taskDue - deadline > 0) {
+      schedule(now);
+    }
   }
 
   synchronized void startIfIdle(long delayNanos) {
@@ -34,25 +39,38 @@ final class TcpTimer {
   }
 
   synchronized void stop() {
-    if (task != null) {
-      task.cancel();
-      task = null;
-    }
-    generation++;
-    pending = false;
+    pending = false; // a queued task finds nothing to do; cancelling it every time is costly
   }
 
   synchronized boolean isPending() {
     return pending;
   }
 
-  private void fire(long gen) {
+  private void schedule(long now) {
+    if (task != null) {
+      task.cancel();
+    }
+    taskDue = deadline;
+    Scheduler.Task[] holder = new Scheduler.Task[1];
+    holder[0] = scheduler.schedule(() -> fire(holder), deadline - now);
+    task = holder[0];
+  }
+
+  private void fire(Scheduler.Task[] self) {
     synchronized (this) {
-      if (!pending || gen != generation) {
+      if (task != self[0]) {
+        return; // superseded
+      }
+      task = null;
+      if (!pending) {
+        return;
+      }
+      long now = System.nanoTime();
+      if (deadline - now > 0) {
+        schedule(now); // restarted since this task was queued
         return;
       }
       pending = false;
-      task = null;
     }
     action.run();
   }

@@ -81,11 +81,11 @@ public final class Peer {
     this.publicKey = publicKey;
     this.handshake = handshake;
     Scheduler s = device.scheduler;
-    this.retransmitHandshake = new PeerTimer(s, this::onRetransmitHandshake);
-    this.sendKeepaliveTimer = new PeerTimer(s, this::onSendKeepalive);
-    this.newHandshake = new PeerTimer(s, this::onNewHandshake);
-    this.zeroKeyMaterial = new PeerTimer(s, this::zeroKeys);
-    this.persistentKeepalive = new PeerTimer(s, this::onPersistentKeepalive);
+    this.retransmitHandshake = new PeerTimer(s, device.time, this::onRetransmitHandshake);
+    this.sendKeepaliveTimer = new PeerTimer(s, device.time, this::onSendKeepalive);
+    this.newHandshake = new PeerTimer(s, device.time, this::onNewHandshake);
+    this.zeroKeyMaterial = new PeerTimer(s, device.time, this::zeroKeys);
+    this.persistentKeepalive = new PeerTimer(s, device.time, this::onPersistentKeepalive);
   }
 
   // ---------------------------------------------------------------- public API
@@ -242,9 +242,7 @@ public final class Peer {
           sendHandshakeInitiation(false);
           return;
         }
-        byte[] msg = seal(s, packet, counter);
-        device.sendDatagram(msg, ep);
-        txBytes.addAndGet(msg.length);
+        txBytes.addAndGet(sealAndSend(s, packet, counter, ep));
         timersAnyAuthenticatedPacketTraversal();
         timersAnyAuthenticatedPacketSent();
         if (packet.length > 0) {
@@ -257,23 +255,36 @@ public final class Peer {
     }
   }
 
-  private byte[] seal(Session s, byte[] plaintext, long counter) {
+  /**
+   * Builds the transport message and encrypts and sends it, inline or through the device's crypto
+   * pipeline. Called under {@code sendLock}, so pipeline order follows counter order. Returns the
+   * message length.
+   */
+  private int sealAndSend(Session s, byte[] plaintext, long counter, InetSocketAddress ep) {
     int padded = Transport.paddedLength(plaintext.length, device.mtu);
     byte[] out = new byte[Transport.HEADER_LENGTH + padded + 16];
     Transport.putHeader(out, s.keypair.remoteIndex(), counter);
     System.arraycopy(plaintext, 0, out, Transport.HEADER_LENGTH, plaintext.length);
-    device
-        .aead()
-        .seal(
-            s.keypair.sendKey(),
-            counter,
-            out,
-            Transport.HEADER_LENGTH,
-            padded,
-            out,
-            Transport.HEADER_LENGTH,
-            null);
-    return out;
+    Runnable encrypt =
+        () ->
+            device
+                .aead()
+                .seal(
+                    s.keypair.sendKey(),
+                    counter,
+                    out,
+                    Transport.HEADER_LENGTH,
+                    padded,
+                    out,
+                    Transport.HEADER_LENGTH,
+                    null);
+    if (device.encryptPipeline == null) {
+      encrypt.run();
+      device.sendDatagram(out, ep);
+    } else {
+      device.encryptPipeline.submit(encrypt, () -> device.sendDatagram(out, ep));
+    }
+    return out.length;
   }
 
   private void keepKeyFreshSending(Session s, long now) {

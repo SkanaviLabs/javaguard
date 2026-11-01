@@ -53,9 +53,9 @@ class TcpFuzzTest {
             0,
             data.length,
             1);
-    STACK.write(p, 0, p.length);
+    STACK.receive(p, p.length);
     byte[] raw = in.consumeRemainingAsBytes();
-    STACK.write(raw, 0, raw.length);
+    STACK.receive(raw, raw.length);
     Duration.ZERO.isZero();
   }
 }

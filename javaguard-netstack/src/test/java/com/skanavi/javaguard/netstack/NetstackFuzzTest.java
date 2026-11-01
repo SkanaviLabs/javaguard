@@ -24,6 +24,6 @@ class NetstackFuzzTest {
   @FuzzTest(maxDuration = "60s")
   void inboundPacketsNeverThrow(FuzzedDataProvider in) {
     byte[] p = in.consumeRemainingAsBytes();
-    STACK.write(p, 0, p.length); // replies queue up and are then dropped; that is fine here
+    STACK.receive(p, p.length); // replies queue up and are then dropped; that is fine here
   }
 }

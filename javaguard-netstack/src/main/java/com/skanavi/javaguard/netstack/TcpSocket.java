@@ -52,6 +52,14 @@ public final class TcpSocket implements Closeable {
     this.readTimeoutNanos = timeout.toNanos();
   }
 
+  /**
+   * Turns on keepalive probes after {@code idle} without traffic (repeated every min(idle, 75 s);
+   * the connection is reset after 9 unanswered probes). {@link Duration#ZERO} turns them off.
+   */
+  public void keepAlive(Duration idle) {
+    connection.keepAlive(idle.toNanos());
+  }
+
   /** Sends a FIN after queued data; reading continues to work. */
   public void shutdownOutput() {
     connection.shutdownOutput();
