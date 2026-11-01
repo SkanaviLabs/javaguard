@@ -7,5 +7,6 @@ rootProject.name = "javaguard"
 include("javaguard-crypto")
 include("javaguard-core")
 include("javaguard-netstack")
+include("javaguard-proxy")
 include("javaguard-config")
 include("javaguard-cli")

@@ -41,6 +41,14 @@ class MainTest {
   }
 
   @Test
+  void parsesProxyBindAddresses() {
+    assertThat(Main.parseBind("1080").getAddress().isLoopbackAddress()).isTrue();
+    assertThat(Main.parseBind("0.0.0.0:1080").getPort()).isEqualTo(1080);
+    assertThat(Main.parseBind("[::1]:9").getAddress().getHostAddress())
+        .isEqualTo("0:0:0:0:0:0:0:1");
+  }
+
+  @Test
   void reportsUsageAndErrors(@TempDir Path dir) throws Exception {
     assertThat(run("")).isEqualTo(2);
     assertThat(run("", "frobnicate")).isEqualTo(2);
@@ -50,5 +58,11 @@ class MainTest {
     assertThat(run("", "up", bad.toString())).isEqualTo(1);
     assertThat(err.toString()).contains("configuration error").contains("line 2");
     assertThat(run("", "up", bad.toString(), "--name", "way-too-long-interface-name")).isEqualTo(1);
+    Path noAddress =
+        Files.writeString(
+            dir.resolve("wg1.conf"),
+            "[Interface]\nPrivateKey = " + PrivateKey.generate().toBase64() + "\n");
+    assertThat(run("", "up", noAddress.toString(), "--proxy", "1080", "--no-uapi")).isEqualTo(1);
+    assertThat(err.toString()).contains("--proxy needs an Address");
   }
 }

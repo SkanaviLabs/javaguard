@@ -7,7 +7,7 @@ description = "Command-line runner for javaguard: key tools and `javaguard up <c
 
 dependencies {
     implementation(project(":javaguard-config"))
-    implementation(project(":javaguard-netstack"))
+    implementation(project(":javaguard-proxy"))
     testImplementation(testFixtures(project(":javaguard-core")))
 }
 

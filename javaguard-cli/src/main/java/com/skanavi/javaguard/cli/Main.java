@@ -13,9 +13,12 @@ import com.skanavi.javaguard.core.UdpBind;
 import com.skanavi.javaguard.crypto.PresharedKey;
 import com.skanavi.javaguard.crypto.PrivateKey;
 import com.skanavi.javaguard.netstack.Netstack;
+import com.skanavi.javaguard.proxy.LocalProxy;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.PrintStream;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -38,6 +41,9 @@ public final class Main {
           --socket <path>      UAPI socket (default: /var/run/wireguard/<name>.sock)
           --no-uapi            do not serve the UAPI socket
           --lenient            ignore OS-level keys (PostUp, Table, ...) instead of failing
+          --proxy [host:]port  serve a SOCKS5/HTTP proxy into the tunnel (needs Address);
+                               binds 127.0.0.1 unless a host is given
+          --proxy-auth u:p     require these proxy credentials
         help                   show this text
 
       'up' runs until interrupted or until its UAPI socket is deleted. Use the
@@ -102,12 +108,16 @@ public final class Main {
     Path socket = null;
     boolean uapi = true;
     boolean lenient = false;
+    String proxySpec = null;
+    String proxyAuth = null;
     for (int i = 1; i < args.length; i++) {
       switch (args[i]) {
         case "--name" -> name = value(args, ++i, "--name");
         case "--socket" -> socket = Path.of(value(args, ++i, "--socket"));
         case "--no-uapi" -> uapi = false;
         case "--lenient" -> lenient = true;
+        case "--proxy" -> proxySpec = value(args, ++i, "--proxy");
+        case "--proxy-auth" -> proxyAuth = value(args, ++i, "--proxy-auth");
         default -> {
           if (args[i].startsWith("-") || file != null) {
             throw new IllegalArgumentException("unexpected argument '" + args[i] + "'");
@@ -134,18 +144,27 @@ public final class Main {
 
     int mtu = config.iface().mtu() != null ? config.iface().mtu() : 1420;
     int port = config.iface().listenPort() != null ? config.iface().listenPort() : 0;
+    if (proxySpec != null && config.iface().addresses().isEmpty()) {
+      throw new IllegalArgumentException("--proxy needs an Address in [Interface]");
+    }
+    InetSocketAddress proxyBind = proxySpec == null ? null : parseBind(proxySpec);
+    if (proxyAuth != null && !proxyAuth.contains(":")) {
+      throw new IllegalArgumentException("--proxy-auth must be user:password");
+    }
     Tun tun;
     PacketPipe pipe = null;
+    Netstack stack = null;
     if (config.iface().addresses().isEmpty()) {
       tun = pipe = new PacketPipe(mtu);
     } else {
       tun =
-          Netstack.builder()
-              .addresses(config.iface().addresses())
-              .dnsServers(config.iface().dns())
-              .searchDomains(config.iface().dnsSearch())
-              .mtu(mtu)
-              .build();
+          stack =
+              Netstack.builder()
+                  .addresses(config.iface().addresses())
+                  .dnsServers(config.iface().dns())
+                  .searchDomains(config.iface().dnsSearch())
+                  .mtu(mtu)
+                  .build();
     }
     Device device =
         Device.builder()
@@ -154,23 +173,37 @@ public final class Main {
             .tun(tun)
             .build();
     UapiServer server = null;
+    LocalProxy proxy = null;
     try {
       config.addPeersTo(device);
       device.start();
+      if (proxyBind != null) {
+        LocalProxy.Builder pb = LocalProxy.builder(stack).bind(proxyBind);
+        if (proxyAuth != null) {
+          int c = proxyAuth.indexOf(':');
+          pb.credentials(proxyAuth.substring(0, c), proxyAuth.substring(c + 1));
+        }
+        proxy = pb.build();
+      }
       if (uapi) {
         server =
             UapiServer.start(
                 device, UdpBind::open, socket != null ? socket : UapiServer.defaultPath(name));
       }
     } catch (IOException | RuntimeException e) {
+      if (proxy != null) {
+        proxy.close();
+      }
       device.close();
       throw e;
     }
 
     Thread drain = pipe == null ? null : drain(pipe);
     UapiServer finalServer = server;
+    LocalProxy finalProxy = proxy;
     Runtime.getRuntime()
-        .addShutdownHook(new Thread(() -> shutdown(device, finalServer, drain), "javaguard-exit"));
+        .addShutdownHook(
+            new Thread(() -> shutdown(device, finalServer, finalProxy, drain), "javaguard-exit"));
 
     err.println(
         "javaguard: "
@@ -187,6 +220,18 @@ public final class Main {
     } else {
       err.println("javaguard: network stack up at " + config.iface().addresses());
     }
+    if (proxy != null) {
+      err.println(
+          "javaguard: SOCKS5/HTTP proxy on "
+              + proxy.address().getAddress().getHostAddress()
+              + ":"
+              + proxy.address().getPort()
+              + (proxyAuth == null ? "" : " (authentication required)"));
+      if (!proxy.address().getAddress().isLoopbackAddress() && proxyAuth == null) {
+        err.println(
+            "javaguard: warning: the proxy is reachable from the network without a password");
+      }
+    }
 
     try {
       while (server == null || server.socketExists()) {
@@ -196,7 +241,7 @@ public final class Main {
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
     }
-    shutdown(device, server, drain);
+    shutdown(device, server, proxy, drain);
     return 0;
   }
 
@@ -215,17 +260,38 @@ public final class Main {
             });
   }
 
-  private static void shutdown(Device device, UapiServer server, Thread drain) {
+  private static void shutdown(Device device, UapiServer server, LocalProxy proxy, Thread drain) {
     if (drain != null) {
       drain.interrupt();
     }
     try {
+      if (proxy != null) {
+        proxy.close();
+      }
       if (server != null) {
         server.close();
       }
       device.close();
     } catch (IOException e) {
       // exiting anyway
+    }
+  }
+
+  /** Parses {@code port}, {@code host:port} or {@code [v6]:port}; host defaults to loopback. */
+  static InetSocketAddress parseBind(String spec) {
+    try {
+      if (spec.matches("\\d+")) {
+        return new InetSocketAddress(InetAddress.getLoopbackAddress(), Integer.parseInt(spec));
+      }
+      int colon = spec.lastIndexOf(':');
+      String host = spec.substring(0, colon);
+      if (host.startsWith("[") && host.endsWith("]")) {
+        host = host.substring(1, host.length() - 1);
+      }
+      return new InetSocketAddress(
+          InetAddress.ofLiteral(host), Integer.parseInt(spec.substring(colon + 1)));
+    } catch (RuntimeException e) {
+      throw new IllegalArgumentException("invalid --proxy address '" + spec + "'", e);
     }
   }
 
