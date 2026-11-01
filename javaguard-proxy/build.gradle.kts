@@ -1,5 +1,6 @@
 plugins {
     id("javaguard.java-library")
+    id("javaguard.publish")
 }
 
 description = "Local SOCKS5 and HTTP proxy for javaguard tunnels, plus java.net integration helpers."

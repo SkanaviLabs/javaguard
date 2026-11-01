@@ -10,7 +10,7 @@ val libs = extensions.getByType<VersionCatalogsExtension>().named("libs")
 fun lib(alias: String) = libs.findLibrary(alias).get()
 
 group = "com.skanavi.javaguard"
-version = "0.1.0-SNAPSHOT"
+// The version comes from gradle.properties.
 
 repositories {
     mavenCentral()
@@ -28,6 +28,22 @@ tasks.withType<JavaCompile>().configureEach {
     options.encoding = "UTF-8"
     options.release = 25
     options.compilerArgs.addAll(listOf("-Xlint:all", "-Werror"))
+}
+
+// Byte-for-byte reproducible jars.
+tasks.withType<AbstractArchiveTask>().configureEach {
+    isPreserveFileTimestamps = false
+    isReproducibleFileOrder = true
+}
+
+tasks.withType<Jar>().configureEach {
+    manifest {
+        attributes(
+            "Implementation-Title" to project.name,
+            "Implementation-Version" to project.version,
+            "Implementation-Vendor" to "AI Security Engineering LLC dba Skanavi",
+        )
+    }
 }
 
 tasks.withType<Javadoc>().configureEach {

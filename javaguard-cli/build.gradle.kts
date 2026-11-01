@@ -1,5 +1,6 @@
 plugins {
     id("javaguard.java-library")
+    id("javaguard.publish")
     application
 }
 
