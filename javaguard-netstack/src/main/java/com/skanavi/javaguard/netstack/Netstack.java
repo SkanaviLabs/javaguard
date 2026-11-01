@@ -4,6 +4,7 @@
 package com.skanavi.javaguard.netstack;
 
 import com.skanavi.javaguard.core.HostAddress;
+import com.skanavi.javaguard.core.Scheduler;
 import com.skanavi.javaguard.core.Tun;
 import java.io.IOException;
 import java.net.BindException;
@@ -60,6 +61,12 @@ public final class Netstack implements Tun {
   private final int pingId = random.nextInt(0x10000);
   private final AtomicLong dropped = new AtomicLong();
   private final DnsResolver dns;
+  private final ConcurrentHashMap<TcpKey, TcpConnection> tcp = new ConcurrentHashMap<>();
+  private final ConcurrentHashMap<Integer, TcpListener> listeners = new ConcurrentHashMap<>();
+  private final Scheduler scheduler;
+  private final boolean ownsScheduler;
+  private final long minRtoNanos;
+  private final long timeWaitNanos;
   private volatile boolean closed;
 
   private record PendingPing(byte[] from, CompletableFuture<Long> reply) {}
@@ -85,6 +92,10 @@ public final class Netstack implements Tun {
     this.ipv6 = v6;
     this.outbound = new ArrayBlockingQueue<>(b.queueCapacity + 1);
     this.dns = new DnsResolver(this, b.dnsServers, b.searchDomains);
+    this.scheduler = b.scheduler != null ? b.scheduler : Scheduler.newDefault();
+    this.ownsScheduler = b.scheduler == null;
+    this.minRtoNanos = b.minRto.toNanos();
+    this.timeWaitNanos = b.timeWait.toNanos();
   }
 
   /** Starts building a netstack. */
@@ -169,6 +180,52 @@ public final class Netstack implements Tun {
     }
   }
 
+  /**
+   * Opens a TCP connection, waiting up to {@code timeout} for the handshake.
+   *
+   * @throws java.net.ConnectException if the peer refuses
+   * @throws java.net.SocketTimeoutException on timeout
+   */
+  public TcpSocket connectTcp(InetSocketAddress remote, Duration timeout) throws IOException {
+    if (remote.isUnresolved()) {
+      throw new IllegalArgumentException("remote must be resolved: " + remote);
+    }
+    if (closed) {
+      throw new IOException("netstack is closed");
+    }
+    InetAddress local = IpPacket.address(sourceFor(remote.getAddress()));
+    for (int i = 0; i < EPHEMERAL_COUNT; i++) {
+      int port = EPHEMERAL_FIRST + random.nextInt(EPHEMERAL_COUNT);
+      if (listeners.containsKey(port)) {
+        continue;
+      }
+      TcpKey key = new TcpKey(local, port, remote.getAddress(), remote.getPort());
+      TcpConnection c = new TcpConnection(this, key);
+      if (tcp.putIfAbsent(key, c) == null) {
+        c.connect(timeout.toNanos());
+        return new TcpSocket(c);
+      }
+    }
+    throw new BindException("no free ephemeral TCP port");
+  }
+
+  /** Listens for TCP connections on {@code port} with a backlog of 128. */
+  public TcpListener listenTcp(int port) throws IOException {
+    return listenTcp(port, 128);
+  }
+
+  /** Listens for TCP connections on {@code port}. */
+  public TcpListener listenTcp(int port, int backlog) throws IOException {
+    if (port < 1 || port > 65535) {
+      throw new IllegalArgumentException("port out of range: " + port);
+    }
+    TcpListener l = new TcpListener(this, port, backlog);
+    if (listeners.putIfAbsent(port, l) != null) {
+      throw new BindException("TCP port " + port + " is in use");
+    }
+    return l;
+  }
+
   // ---------------------------------------------------------------- Tun
 
   @Override
@@ -215,7 +272,8 @@ public final class Netstack implements Tun {
         }
       }
       case IpPacket.UDP -> udp(ip);
-      default -> {} // TCP and others: not supported yet
+      case IpPacket.TCP -> tcp(ip);
+      default -> {}
     }
   }
 
@@ -224,6 +282,15 @@ public final class Netstack implements Tun {
     closed = true;
     for (UdpSocket s : List.copyOf(udp.values())) {
       s.close();
+    }
+    for (TcpListener l : List.copyOf(listeners.values())) {
+      l.close();
+    }
+    for (TcpConnection c : List.copyOf(tcp.values())) {
+      c.abort();
+    }
+    if (ownsScheduler) {
+      scheduler.close();
     }
     outbound.clear();
     outbound.offer(CLOSED);
@@ -283,6 +350,134 @@ public final class Netstack implements Tun {
       InetSocketAddress source = new InetSocketAddress(ip.srcAddress(), IpPacket.u16(p, off));
       socket.deliver(new UdpSocket.Datagram(source, Arrays.copyOfRange(p, off + 8, off + length)));
     }
+  }
+
+  private void tcp(IpPacket ip) {
+    TcpSegment seg = TcpSegment.parse(ip);
+    if (seg == null) {
+      return;
+    }
+    InetAddress local = ip.dstAddress();
+    InetAddress remote = ip.srcAddress();
+    TcpConnection c = tcp.get(new TcpKey(local, seg.dstPort(), remote, seg.srcPort()));
+    if (c != null) {
+      c.onSegment(seg);
+      return;
+    }
+    TcpListener l = listeners.get(seg.dstPort());
+    if (l != null
+        && seg.has(TcpSegment.SYN)
+        && !seg.has(TcpSegment.ACK)
+        && !seg.has(TcpSegment.RST)) {
+      l.onSyn(local, remote, seg);
+      return;
+    }
+    if (!seg.has(TcpSegment.RST)) {
+      // No such connection (RFC 9293 3.10.7.1): reset.
+      if (seg.has(TcpSegment.ACK)) {
+        sendTcp(
+            ip.dst(),
+            ip.src(),
+            seg.dstPort(),
+            seg.srcPort(),
+            seg.ack(),
+            0,
+            TcpSegment.RST,
+            0,
+            -1,
+            -1,
+            null,
+            0,
+            0);
+      } else {
+        sendTcp(
+            ip.dst(),
+            ip.src(),
+            seg.dstPort(),
+            seg.srcPort(),
+            0,
+            seg.seq() + seg.sequenceLength(),
+            TcpSegment.RST | TcpSegment.ACK,
+            0,
+            -1,
+            -1,
+            null,
+            0,
+            0);
+      }
+    }
+  }
+
+  void sendTcp(
+      byte[] src,
+      byte[] dst,
+      int srcPort,
+      int dstPort,
+      int seq,
+      int ack,
+      int flags,
+      int window,
+      int mss,
+      int windowScale,
+      byte[] data,
+      int off,
+      int len) {
+    send(
+        TcpSegment.build(
+            src,
+            dst,
+            srcPort,
+            dstPort,
+            seq,
+            ack,
+            flags,
+            window,
+            mss,
+            windowScale,
+            data,
+            off,
+            len,
+            nextId()));
+  }
+
+  void registerTcp(TcpKey key, TcpConnection c) {
+    if (tcp.putIfAbsent(key, c) != null) {
+      c.abort();
+    }
+  }
+
+  void removeTcp(TcpKey key, TcpConnection c) {
+    tcp.remove(key, c);
+  }
+
+  void removeListener(int port, TcpListener l) {
+    listeners.remove(port, l);
+  }
+
+  Scheduler scheduler() {
+    return scheduler;
+  }
+
+  long minRtoNanos() {
+    return minRtoNanos;
+  }
+
+  long timeWaitNanos() {
+    return timeWaitNanos;
+  }
+
+  int randomInt() {
+    return random.nextInt();
+  }
+
+  /** Descriptions of all TCP connections, for diagnostics. */
+  List<String> tcpDiagnostics() {
+    return tcp.values().stream().map(TcpConnection::toString).toList();
+  }
+
+  /** Number of TCP connections in any state, for tests. */
+  int tcpConnectionCount() {
+    return tcp.size();
   }
 
   /** Largest UDP payload that fits in one packet to a destination of this family. */
@@ -362,6 +557,9 @@ public final class Netstack implements Tun {
     private final List<String> searchDomains = new ArrayList<>();
     private int mtu = 1420;
     private int queueCapacity = 4096;
+    private Scheduler scheduler;
+    private Duration minRto = Duration.ofMillis(200);
+    private Duration timeWait = Duration.ofSeconds(60);
 
     private Builder() {}
 
@@ -411,6 +609,26 @@ public final class Netstack implements Tun {
         throw new IllegalArgumentException("MTU must be 1280..65535 (IPv6 minimum is 1280)");
       }
       this.mtu = mtu;
+      return this;
+    }
+
+    /**
+     * Timer scheduler for TCP; defaults to a private daemon thread. A supplied one is not closed.
+     */
+    public Builder scheduler(Scheduler scheduler) {
+      this.scheduler = scheduler;
+      return this;
+    }
+
+    /** Minimum TCP retransmission timeout (default 200 ms, as in Linux). */
+    public Builder tcpMinRto(Duration minRto) {
+      this.minRto = minRto;
+      return this;
+    }
+
+    /** How long closed TCP connections linger in TIME_WAIT (default 60 s). */
+    public Builder tcpTimeWait(Duration timeWait) {
+      this.timeWait = timeWait;
       return this;
     }
 

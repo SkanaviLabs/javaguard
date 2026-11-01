@@ -10,9 +10,9 @@ import java.util.concurrent.TimeUnit;
 
 /** Minimal Docker CLI wrapper for interop tests (shared as a test fixture). */
 public final class Docker {
-  public static final String IMAGE = "javaguard-interop-wg:3";
+  public static final String IMAGE = "javaguard-interop-wg:4";
   private static final String DOCKERFILE =
-      "FROM alpine:3.22\nRUN apk add --no-cache wireguard-tools-wg wireguard-go socat dnsmasq\n";
+      "FROM alpine:3.22\nRUN apk add --no-cache wireguard-tools-wg wireguard-go socat dnsmasq busybox-extras\n";
 
   private Docker() {}
 
