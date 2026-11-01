@@ -44,6 +44,18 @@ public final class Handshake implements IndexTable.Entry {
 
   private volatile PresharedKey presharedKey;
 
+  private volatile Object attachment;
+
+  /** Attaches an arbitrary object, typically the owner's per-peer state. */
+  public void attach(Object attachment) {
+    this.attachment = attachment;
+  }
+
+  /** The attached object, or {@code null}. */
+  public Object attachment() {
+    return attachment;
+  }
+
   // Guarded by lock.
   State state = State.ZEROED;
   byte[] hash;

@@ -7,7 +7,8 @@ import javax.crypto.SecretKey;
 
 /**
  * Transport keys derived from a completed handshake, with the receiver indices both sides use for
- * them. Immutable; counters and replay protection belong to the transport layer.
+ * them. The keys never change; counters and replay protection live in the transport layer's
+ * {@linkplain #attachment() attachment}.
  */
 public final class Keypair implements IndexTable.Entry {
   private final SecretKey sendKey;
@@ -16,6 +17,18 @@ public final class Keypair implements IndexTable.Entry {
   private final int remoteIndex;
   private final boolean initiator;
   private final long createdNanos;
+
+  private volatile Object attachment;
+
+  /** Attaches an arbitrary object, typically the owner's per-session state. */
+  public void attach(Object attachment) {
+    this.attachment = attachment;
+  }
+
+  /** The attached object, or {@code null}. */
+  public Object attachment() {
+    return attachment;
+  }
 
   Keypair(
       SecretKey sendKey,

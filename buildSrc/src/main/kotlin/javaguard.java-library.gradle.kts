@@ -62,6 +62,8 @@ tasks.register<Test>("interopTest") {
         includeTags("interop")
     }
     outputs.upToDateWhen { false }
+    // -PlongInterop=true also runs multi-minute tests (rekeying against real peers).
+    providers.gradleProperty("longInterop").orNull?.let { systemProperty("javaguard.interop.long", it) }
     testLogging {
         events("passed", "skipped", "failed")
         showStandardStreams = true

@@ -1,13 +1,26 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Stanislav Yurin, AI Security Engineering LLC dba Skanavi
 
-package com.skanavi.javaguard.core.noise;
+package com.skanavi.javaguard.core.interop;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+import com.skanavi.javaguard.core.interop.WireGuardContainer.Implementation;
+import com.skanavi.javaguard.core.noise.CookieChecker;
+import com.skanavi.javaguard.core.noise.Handshake;
+import com.skanavi.javaguard.core.noise.HandshakeInitiation;
+import com.skanavi.javaguard.core.noise.HandshakeResponse;
+import com.skanavi.javaguard.core.noise.IndexTable;
+import com.skanavi.javaguard.core.noise.Keypair;
+import com.skanavi.javaguard.core.noise.Messages;
+import com.skanavi.javaguard.core.noise.Noise;
+import com.skanavi.javaguard.core.noise.Protocol;
+import com.skanavi.javaguard.core.noise.StaticIdentity;
+import com.skanavi.javaguard.core.noise.TimeSource;
 import com.skanavi.javaguard.crypto.PresharedKey;
 import com.skanavi.javaguard.crypto.PrivateKey;
+import com.skanavi.javaguard.crypto.PublicKey;
 import java.io.IOException;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
@@ -30,29 +43,16 @@ import org.junit.jupiter.params.provider.EnumSource;
  * the container's IP stack.
  */
 @Tag("interop")
-class WireGuardInteropTest {
-  /** The WireGuard implementation running in the container. */
-  enum Implementation {
-    KERNEL("ip link add wg0 type wireguard"),
-    WIREGUARD_GO("wireguard-go wg0");
-
-    final String createInterface;
-
-    Implementation(String createInterface) {
-      this.createInterface = createInterface;
-    }
-  }
-
+class HandshakeInteropTest {
   private static final byte[] JAVA_IP = {10, 9, 0, 1};
   private static final byte[] KERNEL_IP = {10, 9, 0, 2};
 
-  private final PrivateKey peerKey = PrivateKey.generate();
   private final StaticIdentity identity = new StaticIdentity(PrivateKey.generate());
   private final Noise noise =
       new Noise(identity, new IndexTable(), TimeSource.system(), new SecureRandom());
   private final CookieChecker checker =
       new CookieChecker(identity, TimeSource.system(), new SecureRandom());
-  private String container;
+  private WireGuardContainer container;
 
   @BeforeAll
   static void requireDocker() throws IOException {
@@ -63,19 +63,15 @@ class WireGuardInteropTest {
   @AfterEach
   void removeContainer() throws IOException {
     if (container != null) {
-      Docker.exec(null, "docker", "rm", "-f", container);
+      container.close();
     }
   }
 
   @ParameterizedTest
   @EnumSource(Implementation.class)
   void javaguardInitiatesPeerResponds(Implementation impl) throws Exception {
-    Handshake hs = noise.newHandshake(peerKey.publicKey(), PresharedKey.NONE);
-    startPeer(impl, null);
-    String mapped = Docker.run("docker", "port", container, "51820/udp").lines().findFirst().get();
-    InetSocketAddress kernel =
-        new InetSocketAddress(
-            InetAddress.getLoopbackAddress(), Integer.parseInt(mapped.split(":")[1]));
+    Handshake hs = noise.newHandshake(startPeer(impl, null), PresharedKey.NONE);
+    InetSocketAddress kernel = container.endpoint();
 
     try (DatagramSocket socket =
         new DatagramSocket(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0))) {
@@ -115,23 +111,22 @@ class WireGuardInteropTest {
       assertThat(reply).as("ICMP echo reply from the kernel").isNotNull();
       System.out.println("Kernel answered our encrypted ping");
     }
-    assertThat(Docker.run("docker", "exec", container, "wg", "show", "wg0", "latest-handshakes"))
-        .doesNotEndWith("\t0");
+    assertThat(container.exec("wg show wg0 latest-handshakes")).doesNotEndWith("\t0");
   }
 
   @ParameterizedTest
   @EnumSource(Implementation.class)
   void peerInitiatesJavaguardRespondsWithCookieChallenge(Implementation impl) throws Exception {
-    Handshake hs = noise.newHandshake(peerKey.publicKey(), PresharedKey.NONE);
     try (DatagramSocket socket = new DatagramSocket(new InetSocketAddress(0))) {
       socket.setSoTimeout(1000);
-      startPeer(impl, "host.docker.internal:" + socket.getLocalPort());
+      Handshake hs =
+          noise.newHandshake(
+              startPeer(impl, "host.docker.internal:" + socket.getLocalPort()), PresharedKey.NONE);
       CompletableFuture<Docker.Result> ping =
           CompletableFuture.supplyAsync(
               () -> {
                 try {
-                  return Docker.exec(
-                      null, "docker", "exec", container, "ping", "-c", "1", "-W", "25", "10.9.0.1");
+                  return container.tryExec("ping -c 1 -W 25 10.9.0.1");
                 } catch (IOException e) {
                   throw new RuntimeException(e);
                 }
@@ -191,41 +186,9 @@ class WireGuardInteropTest {
     }
   }
 
-  private void startPeer(Implementation impl, String endpoint) throws IOException {
-    container =
-        Docker.run(
-            "docker",
-            "run",
-            "-d",
-            "--rm",
-            "--cap-add",
-            "NET_ADMIN",
-            "--device",
-            "/dev/net/tun",
-            "--add-host",
-            "host.docker.internal:host-gateway",
-            "-p",
-            "127.0.0.1::51820/udp",
-            Docker.IMAGE,
-            "sleep",
-            "300");
-    Docker.runWithInput(
-        peerKey.toBase64() + "\n", "docker", "exec", "-i", container, "sh", "-c", "cat > /k");
-    String peer =
-        "peer "
-            + identity.publicKey().toBase64()
-            + " allowed-ips 10.9.0.1/32"
-            + (endpoint == null ? "" : " endpoint " + endpoint);
-    Docker.run(
-        "docker",
-        "exec",
-        container,
-        "sh",
-        "-ec",
-        impl.createInterface
-            + "; wg set wg0 listen-port 51820 private-key /k "
-            + peer
-            + "; ip addr add 10.9.0.2/24 dev wg0; ip link set wg0 up");
+  private PublicKey startPeer(Implementation impl, String endpoint) throws IOException {
+    container = new WireGuardContainer(impl, identity.publicKey(), endpoint);
+    return container.publicKey();
   }
 
   private static void send(DatagramSocket socket, byte[] data, SocketAddress to)

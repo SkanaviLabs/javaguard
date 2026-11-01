@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Stanislav Yurin, AI Security Engineering LLC dba Skanavi
 
-package com.skanavi.javaguard.core.noise;
+package com.skanavi.javaguard.core.interop;
 
+import com.skanavi.javaguard.core.noise.Keypair;
+import com.skanavi.javaguard.core.noise.Protocol;
 import com.skanavi.javaguard.crypto.ChaCha20Poly1305;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -13,11 +15,11 @@ import javax.crypto.AEADBadTagException;
  * Test-only helpers: WireGuard transport framing (until the transport layer exists) and IPv4 ICMP
  * echo packets.
  */
-final class Packets {
+public final class Packets {
   private Packets() {}
 
   /** Encrypts {@code plaintext} (zero-padded to 16 bytes) into a type-4 transport message. */
-  static byte[] seal(Keypair kp, long counter, byte[] plaintext) {
+  public static byte[] seal(Keypair kp, long counter, byte[] plaintext) {
     int padded = (plaintext.length + 15) & ~15;
     byte[] body = Arrays.copyOf(plaintext, padded);
     byte[] out = new byte[16 + padded + ChaCha20Poly1305.TAG_LENGTH];
@@ -31,7 +33,7 @@ final class Packets {
   }
 
   /** Decrypts a type-4 transport message addressed to {@code kp}; returns the padded plaintext. */
-  static byte[] open(Keypair kp, byte[] packet, int len) throws AEADBadTagException {
+  public static byte[] open(Keypair kp, byte[] packet, int len) throws AEADBadTagException {
     ByteBuffer b = ByteBuffer.wrap(packet, 0, len).order(ByteOrder.LITTLE_ENDIAN);
     if (len < 32 || b.getInt() != Protocol.TYPE_TRANSPORT || b.getInt() != kp.localIndex()) {
       throw new AssertionError("not a transport message for " + kp);
@@ -42,7 +44,7 @@ final class Packets {
     return out;
   }
 
-  static byte[] icmpEcho(byte[] src, byte[] dst, int type, int id, int seq, byte[] payload) {
+  public static byte[] icmpEcho(byte[] src, byte[] dst, int type, int id, int seq, byte[] payload) {
     int len = 20 + 8 + payload.length;
     ByteBuffer b = ByteBuffer.allocate(len);
     b.put((byte) 0x45).put((byte) 0).putShort((short) len);
@@ -58,7 +60,7 @@ final class Packets {
   }
 
   /** Builds the echo reply for an IPv4 ICMP echo request. */
-  static byte[] echoReply(byte[] request) {
+  public static byte[] echoReply(byte[] request) {
     int total = ((request[2] & 0xff) << 8) | (request[3] & 0xff);
     byte[] src = Arrays.copyOfRange(request, 12, 16);
     byte[] dst = Arrays.copyOfRange(request, 16, 20);
@@ -67,7 +69,7 @@ final class Packets {
     return icmpEcho(dst, src, 0, id, seq, Arrays.copyOfRange(request, 28, total));
   }
 
-  static boolean isIcmp(byte[] ip, int icmpType, byte[] src) {
+  public static boolean isIcmp(byte[] ip, int icmpType, byte[] src) {
     return ip.length >= 28
         && (ip[0] >> 4) == 4
         && ip[9] == 1
