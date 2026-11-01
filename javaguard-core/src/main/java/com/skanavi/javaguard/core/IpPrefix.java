@@ -63,6 +63,6 @@ public record IpPrefix(InetAddress address, int length) {
 
   @Override
   public String toString() {
-    return address.getHostAddress() + "/" + length;
+    return Addresses.format(address) + "/" + length;
   }
 }

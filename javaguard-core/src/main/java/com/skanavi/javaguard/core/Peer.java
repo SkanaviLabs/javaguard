@@ -121,6 +121,16 @@ public final class Peer {
     }
   }
 
+  /** Routes {@code prefix} to this peer, taking it from any other peer. */
+  public void addAllowedIp(IpPrefix prefix) {
+    device.allowedIps.insert(prefix, this);
+  }
+
+  /** Stops routing {@code prefix} to this peer; returns whether it was routed here. */
+  public boolean removeAllowedIp(IpPrefix prefix) {
+    return device.allowedIps.remove(prefix, this);
+  }
+
   /** The pre-shared key. */
   public PresharedKey presharedKey() {
     return handshake.presharedKey();
@@ -136,15 +146,26 @@ public final class Peer {
     return Duration.ofNanos(persistentKeepaliveNanos);
   }
 
-  /** Sets the persistent keepalive interval; zero turns it off. */
+  /**
+   * Sets the persistent keepalive interval; zero turns it off. Turning it on while the device is up
+   * sends a keepalive at once, which starts a handshake if needed.
+   */
   public void persistentKeepalive(Duration interval) {
     if (interval.isNegative() || interval.toSeconds() > 65535) {
       throw new IllegalArgumentException("persistent keepalive must be 0..65535 seconds");
     }
+    long previousNanos = persistentKeepaliveNanos;
     this.persistentKeepaliveNanos = interval.toNanos();
     if (interval.isZero()) {
       persistentKeepalive.del();
+    } else if (previousNanos == 0 && device.isUp()) {
+      sendKeepalive();
     }
+  }
+
+  /** Sets the interval without side effects; for initial configuration under the identity lock. */
+  void initPersistentKeepalive(Duration interval) {
+    this.persistentKeepaliveNanos = interval.toNanos();
   }
 
   /** Bytes received from this peer, including handshake messages. */

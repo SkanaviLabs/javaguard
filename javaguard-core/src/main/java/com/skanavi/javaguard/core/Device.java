@@ -73,7 +73,7 @@ public final class Device implements Closeable {
   private final boolean ownsScheduler;
   private final SecureRandom random;
   private final RandomGenerator jitter;
-  private final Bind bind;
+  private volatile Bind bind;
   private final Tun tun;
   final int mtu;
 
@@ -152,6 +152,9 @@ public final class Device implements Closeable {
    * peer whose public key equals the new local public key is removed.
    */
   public void privateKey(PrivateKey key) {
+    if (key.equals(privateKey())) {
+      return;
+    }
     StaticIdentity identity = new StaticIdentity(key);
     removePeer(identity.publicKey());
     identityLock.writeLock().lock();
@@ -178,6 +181,24 @@ public final class Device implements Closeable {
   /** The UDP port of the bind. */
   public int listenPort() {
     return bind.localPort();
+  }
+
+  /**
+   * Replaces the UDP bind, for example to change the listen port. The old bind is closed. Peers
+   * keep their sessions and endpoints.
+   */
+  public void bind(Bind newBind) throws IOException {
+    Objects.requireNonNull(newBind, "bind");
+    Bind old;
+    synchronized (lifecycleLock) {
+      if (closed) {
+        newBind.close();
+        throw new IllegalStateException("device is closed");
+      }
+      old = bind;
+      bind = newBind;
+    }
+    old.close();
   }
 
   /** The tun this device reads from and writes to. */
@@ -207,7 +228,7 @@ public final class Device implements Closeable {
         throw new IllegalArgumentException("peer already exists: " + config.publicKey());
       }
       peer.endpoint(config.endpoint());
-      peer.persistentKeepalive(config.persistentKeepalive());
+      peer.initPersistentKeepalive(config.persistentKeepalive());
       for (IpPrefix prefix : config.allowedIps()) {
         allowedIps.insert(prefix, peer);
       }
@@ -215,7 +236,7 @@ public final class Device implements Closeable {
       identityLock.readLock().unlock();
     }
     if (up && !config.persistentKeepalive().isZero()) {
-      peer.sendKeepalive();
+      peer.sendKeepalive(); // outside the identity lock (see Peer lock order)
     }
     return peer;
   }
@@ -266,6 +287,11 @@ public final class Device implements Closeable {
     }
   }
 
+  /** Whether {@link #start()} was called and the device is not closed. */
+  public boolean isUp() {
+    return up;
+  }
+
   /** Stops all threads, closes the bind and tun, and erases all keys. */
   @Override
   public void close() throws IOException {
@@ -302,11 +328,14 @@ public final class Device implements Closeable {
   private void bindLoop() {
     byte[] buf = new byte[65536];
     while (!closed) {
+      Bind current = bind;
       try {
-        Bind.Datagram d = bind.receive(buf);
+        Bind.Datagram d = current.receive(buf);
         processDatagram(buf, 0, d.length(), d.source());
       } catch (ClosedChannelException e) {
-        return;
+        if (closed || current == bind) {
+          return; // closed for good, not swapped by bind(Bind)
+        }
       } catch (IOException | RuntimeException e) {
         if (closed) {
           return;

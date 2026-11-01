@@ -14,7 +14,8 @@ class IpPrefixTest {
     assertThat(IpPrefix.parse("10.0.0.7/24")).hasToString("10.0.0.0/24");
     assertThat(IpPrefix.parse("10.1.2.3")).hasToString("10.1.2.3/32");
     assertThat(IpPrefix.parse("10.255.255.255/9")).hasToString("10.128.0.0/9");
-    assertThat(IpPrefix.parse("::/0")).hasToString("0:0:0:0:0:0:0:0/0");
+    assertThat(IpPrefix.parse("::/0")).hasToString("::/0");
+    assertThat(IpPrefix.parse("fd00:0:0:1::7/64")).hasToString("fd00:0:0:1::/64");
     assertThat(IpPrefix.parse("fd00::1/64").isIpv4()).isFalse();
     assertThat(IpPrefix.parse("10.0.0.7/24")).isEqualTo(IpPrefix.parse("10.0.0.0/24"));
   }

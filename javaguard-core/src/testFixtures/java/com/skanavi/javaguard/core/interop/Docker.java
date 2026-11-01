@@ -8,7 +8,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
-/** Minimal Docker CLI wrapper for interop tests. */
+/** Minimal Docker CLI wrapper for interop tests (shared as a test fixture). */
 public final class Docker {
   public static final String IMAGE = "javaguard-interop-wg:2";
   private static final String DOCKERFILE =
@@ -25,7 +25,12 @@ public final class Docker {
   }
 
   public static void buildImage() throws IOException {
-    check(exec(DOCKERFILE, "docker", "build", "-q", "-t", IMAGE, "-"), "docker build");
+    buildImage(IMAGE, DOCKERFILE);
+  }
+
+  /** Builds {@code dockerfile} (no build context) as {@code tag}. */
+  public static void buildImage(String tag, String dockerfile) throws IOException {
+    check(exec(dockerfile, "docker", "build", "-q", "-t", tag, "-"), "docker build " + tag);
   }
 
   /** Runs a command, failing the test on a non-zero exit; returns trimmed stdout. */

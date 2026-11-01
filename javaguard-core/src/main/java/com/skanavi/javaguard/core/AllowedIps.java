@@ -67,6 +67,26 @@ final class AllowedIps<T> {
     }
   }
 
+  /** Removes {@code prefix} if {@code owner} owns it; returns whether it did. */
+  boolean remove(IpPrefix prefix, T owner) {
+    byte[] addr = prefix.address().getAddress();
+    lock.writeLock().lock();
+    try {
+      Node<T> node = root(addr.length);
+      for (int i = 0; i < prefix.length() && node != null; i++) {
+        node = bit(addr, 0, i) == 0 ? node.zero : node.one;
+      }
+      if (node == null || node.owner != owner || !prefix.equals(node.prefix)) {
+        return false;
+      }
+      node.owner = null;
+      node.prefix = null;
+      return true;
+    } finally {
+      lock.writeLock().unlock();
+    }
+  }
+
   /** Removes every prefix owned by {@code owner}. */
   void removeAll(T owner) {
     lock.writeLock().lock();
