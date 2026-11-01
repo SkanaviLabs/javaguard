@@ -8,9 +8,11 @@ import com.skanavi.javaguard.config.UapiServer;
 import com.skanavi.javaguard.config.WgQuickConfig;
 import com.skanavi.javaguard.core.Device;
 import com.skanavi.javaguard.core.PacketPipe;
+import com.skanavi.javaguard.core.Tun;
 import com.skanavi.javaguard.core.UdpBind;
 import com.skanavi.javaguard.crypto.PresharedKey;
 import com.skanavi.javaguard.crypto.PrivateKey;
+import com.skanavi.javaguard.netstack.Netstack;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.PrintStream;
@@ -20,7 +22,6 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicLong;
 
 /** Entry point of the {@code javaguard} command. */
 public final class Main {
@@ -40,7 +41,9 @@ public final class Main {
         help                   show this text
 
       'up' runs until interrupted or until its UAPI socket is deleted. Use the
-      standard wg(8) tool to inspect and change it: wg show <name>.
+      standard wg(8) tool to inspect and change it: wg show <name>. If the
+      configuration has an Address, a userspace network stack with that address
+      answers pings inside the tunnel.
       """;
 
   private Main() {}
@@ -131,12 +134,24 @@ public final class Main {
 
     int mtu = config.iface().mtu() != null ? config.iface().mtu() : 1420;
     int port = config.iface().listenPort() != null ? config.iface().listenPort() : 0;
-    PacketPipe pipe = new PacketPipe(mtu);
+    Tun tun;
+    PacketPipe pipe = null;
+    if (config.iface().addresses().isEmpty()) {
+      tun = pipe = new PacketPipe(mtu);
+    } else {
+      tun =
+          Netstack.builder()
+              .addresses(config.iface().addresses())
+              .dnsServers(config.iface().dns())
+              .searchDomains(config.iface().dnsSearch())
+              .mtu(mtu)
+              .build();
+    }
     Device device =
         Device.builder()
             .privateKey(config.iface().privateKey())
             .bind(UdpBind.open(port))
-            .tun(pipe)
+            .tun(tun)
             .build();
     UapiServer server = null;
     try {
@@ -152,22 +167,7 @@ public final class Main {
       throw e;
     }
 
-    AtomicLong discarded = new AtomicLong();
-    Thread drain =
-        Thread.ofVirtual()
-            .start(
-                () -> {
-                  try {
-                    while (!Thread.currentThread().isInterrupted()) {
-                      if (pipe.receive(Duration.ofSeconds(1)) != null) {
-                        discarded.incrementAndGet();
-                      }
-                    }
-                  } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                  }
-                });
-
+    Thread drain = pipe == null ? null : drain(pipe);
     UapiServer finalServer = server;
     Runtime.getRuntime()
         .addShutdownHook(new Thread(() -> shutdown(device, finalServer, drain), "javaguard-exit"));
@@ -180,9 +180,13 @@ public final class Main {
             + ", UDP port "
             + device.listenPort()
             + (server != null ? ", UAPI " + server.path() : ""));
-    err.println(
-        "javaguard: no network stack is attached yet; packets arriving through the tunnel are"
-            + " discarded");
+    if (pipe != null) {
+      err.println(
+          "javaguard: no Address configured, so no network stack: packets arriving through the"
+              + " tunnel are discarded");
+    } else {
+      err.println("javaguard: network stack up at " + config.iface().addresses());
+    }
 
     try {
       while (server == null || server.socketExists()) {
@@ -196,8 +200,25 @@ public final class Main {
     return 0;
   }
 
+  /** Discards packets that come out of the tunnel when there is no network stack. */
+  private static Thread drain(PacketPipe pipe) {
+    return Thread.ofVirtual()
+        .start(
+            () -> {
+              try {
+                while (!Thread.currentThread().isInterrupted()) {
+                  pipe.receive(Duration.ofSeconds(1));
+                }
+              } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+              }
+            });
+  }
+
   private static void shutdown(Device device, UapiServer server, Thread drain) {
-    drain.interrupt();
+    if (drain != null) {
+      drain.interrupt();
+    }
     try {
       if (server != null) {
         server.close();

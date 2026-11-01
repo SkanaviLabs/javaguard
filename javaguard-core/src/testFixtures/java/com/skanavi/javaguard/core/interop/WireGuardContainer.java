@@ -35,6 +35,12 @@ public final class WireGuardContainer implements AutoCloseable {
   /** javaguard's tunnel address. */
   public static final byte[] JAVAGUARD_IP = {10, 9, 0, 1};
 
+  /** The container's IPv6 tunnel address. */
+  public static final String CONTAINER_IP6 = "fd00:9::2";
+
+  /** javaguard's IPv6 tunnel address. */
+  public static final String JAVAGUARD_IP6 = "fd00:9::1";
+
   private final String id;
   private final PrivateKey key = PrivateKey.generate();
 
@@ -56,6 +62,8 @@ public final class WireGuardContainer implements AutoCloseable {
             "NET_ADMIN",
             "--device",
             "/dev/net/tun",
+            "--sysctl",
+            "net.ipv6.conf.all.disable_ipv6=0",
             "--add-host",
             "host.docker.internal:host-gateway",
             "-p",
@@ -69,13 +77,13 @@ public final class WireGuardContainer implements AutoCloseable {
       String peer =
           "peer "
               + javaguard.toBase64()
-              + " allowed-ips 10.9.0.1/32"
+              + " allowed-ips 10.9.0.1/32,fd00:9::1/128"
               + (endpoint == null ? "" : " endpoint " + endpoint);
       exec(
           impl.createInterface
               + "; wg set wg0 listen-port 51820 private-key /k "
               + peer
-              + "; ip addr add 10.9.0.2/24 dev wg0; ip link set wg0 up");
+              + "; ip addr add 10.9.0.2/24 dev wg0; ip -6 addr add fd00:9::2/64 dev wg0; ip link set wg0 up");
     } catch (IOException | RuntimeException | Error e) {
       close();
       throw e;

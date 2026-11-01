@@ -21,6 +21,16 @@ class IpPrefixTest {
   }
 
   @Test
+  void hostAddressesKeepHostBits() {
+    HostAddress h = HostAddress.parse("10.0.0.7/24");
+    assertThat(h).hasToString("10.0.0.7/24");
+    assertThat(h.network()).isEqualTo(IpPrefix.parse("10.0.0.0/24"));
+    assertThat(HostAddress.parse("fd00::5")).hasToString("fd00::5/128");
+    assertThatThrownBy(() -> HostAddress.parse("10.0.0.1/33"))
+        .isInstanceOf(IllegalArgumentException.class);
+  }
+
+  @Test
   void rejectsInvalidInput() {
     assertThatThrownBy(() -> IpPrefix.parse("10.0.0.0/33"))
         .isInstanceOf(IllegalArgumentException.class);

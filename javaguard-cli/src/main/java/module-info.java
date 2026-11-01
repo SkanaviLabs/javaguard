@@ -4,4 +4,5 @@
 /** The {@code javaguard} command-line tool. */
 module com.skanavi.javaguard.cli {
   requires com.skanavi.javaguard.config;
+  requires com.skanavi.javaguard.netstack;
 }

@@ -5,6 +5,7 @@ package com.skanavi.javaguard.config;
 
 import com.skanavi.javaguard.core.Addresses;
 import com.skanavi.javaguard.core.Device;
+import com.skanavi.javaguard.core.HostAddress;
 import com.skanavi.javaguard.core.IpPrefix;
 import com.skanavi.javaguard.core.PeerConfig;
 import com.skanavi.javaguard.crypto.PresharedKey;
@@ -60,7 +61,7 @@ public record WgQuickConfig(InterfaceSection iface, List<PeerSection> peers) {
   public record InterfaceSection(
       PrivateKey privateKey,
       Integer listenPort,
-      List<IpPrefix> addresses,
+      List<HostAddress> addresses,
       List<InetAddress> dns,
       List<String> dnsSearch,
       Integer mtu) {
@@ -253,7 +254,7 @@ public record WgQuickConfig(InterfaceSection iface, List<PeerSection> peers) {
     private boolean sawInterface;
     private PrivateKey privateKey;
     private Integer listenPort;
-    private final List<IpPrefix> addresses = new ArrayList<>();
+    private final List<HostAddress> addresses = new ArrayList<>();
     private final List<InetAddress> dns = new ArrayList<>();
     private final List<String> dnsSearch = new ArrayList<>();
     private Integer mtu;
@@ -342,7 +343,7 @@ public record WgQuickConfig(InterfaceSection iface, List<PeerSection> peers) {
       switch (key) {
         case "privatekey" -> privateKey = PrivateKey.fromBase64(value);
         case "listenport" -> listenPort = parseInt(value, 0, 65535, "ListenPort");
-        case "address" -> list(value).forEach(v -> addresses.add(IpPrefix.parse(v)));
+        case "address" -> list(value).forEach(v -> addresses.add(HostAddress.parse(v)));
         case "dns" ->
             list(value)
                 .forEach(

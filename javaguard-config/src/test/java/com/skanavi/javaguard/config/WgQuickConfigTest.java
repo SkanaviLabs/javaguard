@@ -6,6 +6,7 @@ package com.skanavi.javaguard.config;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.skanavi.javaguard.core.HostAddress;
 import com.skanavi.javaguard.core.IpPrefix;
 import com.skanavi.javaguard.crypto.PresharedKey;
 import com.skanavi.javaguard.crypto.PrivateKey;
@@ -27,7 +28,7 @@ class WgQuickConfigTest {
       # A typical client configuration
       [Interface]
       PrivateKey = %s
-      Address = 10.0.0.2/32, fd00::2/128
+      Address = 10.0.0.2/24, fd00::2/64
       DNS = 10.0.0.1, corp.example
       MTU = 1380
       listenport=51821   # keys are case-insensitive
@@ -52,8 +53,9 @@ class WgQuickConfigTest {
     WgQuickConfig c = WgQuickConfig.parse(SAMPLE);
     assertThat(c.iface().privateKey()).isEqualTo(KEY);
     assertThat(c.iface().listenPort()).isEqualTo(51821);
-    assertThat(c.iface().addresses())
-        .containsExactly(IpPrefix.parse("10.0.0.2/32"), IpPrefix.parse("fd00::2/128"));
+    assertThat(c.iface().addresses()) // host bits are kept, unlike allowed IPs
+        .containsExactly(HostAddress.parse("10.0.0.2/24"), HostAddress.parse("fd00::2/64"));
+    assertThat(c.iface().addresses().get(0)).hasToString("10.0.0.2/24");
     assertThat(c.iface().dns()).containsExactly(InetAddress.ofLiteral("10.0.0.1"));
     assertThat(c.iface().dnsSearch()).containsExactly("corp.example");
     assertThat(c.iface().mtu()).isEqualTo(1380);

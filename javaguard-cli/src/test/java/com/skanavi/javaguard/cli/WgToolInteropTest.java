@@ -65,7 +65,7 @@ class WgToolInteropTest {
         "/etc/wireguard/wg0.conf",
         "[Interface]\nPrivateKey = "
             + javaguardKey.toBase64()
-            + "\nListenPort = 51820\n\n"
+            + "\nListenPort = 51820\nAddress = 10.9.0.1/24\n\n"
             + "[Peer]\nPublicKey = "
             + kernel.toBase64()
             + "\nAllowedIPs = 10.9.0.2/32\n"
@@ -113,7 +113,12 @@ class WgToolInteropTest {
             + jg.toBase64()
             + " allowed-ips 10.9.0.1/32 endpoint 127.0.0.1:51820;"
             + " ip addr add 10.9.0.2/24 dev wg1; ip link set wg1 up");
-    Docker.exec(null, "docker", "exec", container, "ping", "-c", "3", "-W", "2", "10.9.0.1");
+    // The netstack from the Address line answers the kernel's pings through the tunnel.
+    assertThat(
+            Docker.exec(null, "docker", "exec", container, "ping", "-c", "3", "-W", "3", "10.9.0.1")
+                .exitCode())
+        .as("kernel ping to javaguard's netstack")
+        .isZero();
     String handshakes = exec("wg show wg0 latest-handshakes");
     assertThat(handshakes).startsWith(kernel.toBase64() + "\t").doesNotEndWith("\t0");
     String[] transfer = exec("wg show wg0 transfer").split("\t");
