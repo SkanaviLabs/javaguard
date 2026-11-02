@@ -64,7 +64,7 @@ dependencies {
 
 tasks.test {
     useJUnitPlatform {
-        excludeTags("fuzz", "interop", "soak")
+        excludeTags("fuzz", "interop", "soak", "remote")
     }
 }
 
