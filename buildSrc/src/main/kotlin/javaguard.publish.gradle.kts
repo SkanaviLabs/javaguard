@@ -55,6 +55,10 @@ signing {
     if (key.isPresent) {
         useInMemoryPgpKeys(key.get(), providers.gradleProperty("signingPassword").orNull)
         sign(publishing.publications["maven"])
+    } else if (providers.gradleProperty("signing.gnupg.keyName").isPresent) {
+        // Sign with the local gpg and its agent; the passphrase, if any, goes to gpg's own prompt.
+        useGpgCmd()
+        sign(publishing.publications["maven"])
     }
 }
 

@@ -43,7 +43,14 @@ The build creates and checks the upload bundle. Uploading it is the one manual s
 
 2. Set the version in `gradle.properties` (for example `version=1.0.0`) and date the entry in
    `CHANGELOG.md`.
-3. Build, sign, verify and zip the bundle. Pass the key as Gradle properties, never committed:
+3. Build, sign, verify and zip the bundle. The simplest way signs with your local `gpg`, which
+   asks for the passphrase itself:
+
+   ```bash
+   ./gradlew clean centralBundle -Psigning.gnupg.keyName=<KEY_ID>
+   ```
+
+   Or, for CI, pass the key as Gradle properties, never committed:
 
    ```bash
    export ORG_GRADLE_PROJECT_signingKey="$(gpg --export-secret-keys --armor <KEY_ID>)"
