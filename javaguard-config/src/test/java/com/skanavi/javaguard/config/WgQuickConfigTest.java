@@ -132,4 +132,43 @@ class WgQuickConfigTest {
         .hasMessageContaining(message)
         .satisfies(e -> assertThat(((ConfigException) e).line()).isEqualTo(line));
   }
+
+  @Test
+  void keepsOsLevelKeysWhenParsedForHost() throws Exception {
+    String text =
+        """
+        [Interface]
+        PrivateKey = %s
+        Table = 1234
+        FwMark = 0xca6c
+        PreUp = echo pre %%i
+        PostUp = echo up1
+        PostUp = echo up2
+        PreDown = echo predown
+        PostDown = echo down
+        SaveConfig = true
+        """
+            .formatted(KEY.toBase64());
+    WgQuickConfig c = WgQuickConfig.parseForHost(text);
+    WgQuickConfig.HostSettings h = c.host();
+    assertThat(h.table()).isEqualTo("1234");
+    assertThat(h.fwMark()).isEqualTo(0xca6c);
+    assertThat(h.preUp()).containsExactly("echo pre %i");
+    assertThat(h.postUp()).containsExactly("echo up1", "echo up2");
+    assertThat(h.preDown()).containsExactly("echo predown");
+    assertThat(h.postDown()).containsExactly("echo down");
+    assertThat(h.saveConfig()).isTrue();
+    assertThat(h.hasHooks()).isTrue();
+    assertThat(WgQuickConfig.parseForHost(c.format())).isEqualTo(c);
+
+    assertThat(WgQuickConfig.parseForHost(SAMPLE).host())
+        .isEqualTo(WgQuickConfig.HostSettings.NONE);
+    assertThat(WgQuickConfig.parseLenient(text, new ArrayList<>()).host())
+        .isEqualTo(WgQuickConfig.HostSettings.NONE);
+    assertThatThrownBy(
+            () -> WgQuickConfig.parseForHost(text.replace("Table = 1234", "Table = 1; rm")))
+        .hasMessageContaining("invalid Table");
+    assertThatThrownBy(() -> WgQuickConfig.parseForHost(text.replace("0xca6c", "0x1ffffffff")))
+        .hasMessageContaining("FwMark");
+  }
 }

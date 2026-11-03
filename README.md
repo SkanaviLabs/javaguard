@@ -5,6 +5,10 @@ JVM. A userspace TCP/IP stack gives the application its own addresses inside the
 local SOCKS5/HTTP proxy lets unmodified clients such as `curl`, browsers and
 `java.net.http.HttpClient` use the tunnel.
 
+On Linux, the optional `javaguard-tun` module can instead create a real network interface, so
+every program on the host uses the tunnel. It is the one module that calls native code (through
+`java.lang.foreign`) and it needs root or `CAP_NET_ADMIN`; nothing else depends on it.
+
 javaguard interoperates with the Linux kernel module and `wireguard-go`. That is tested in both
 roles on every change; see [Testing](#testing).
 
@@ -21,6 +25,7 @@ roles on every change; see [Testing](#testing).
 | `javaguard-netstack` | `Netstack`: userspace IPv4/IPv6, ICMP, UDP sockets, TCP, DNS resolver |
 | `javaguard-proxy` | `LocalProxy`: SOCKS5 and HTTP proxy into the tunnel, plus `ProxySelector`/`SocketFactory`/`HttpClient` helpers |
 | `javaguard-config` | wg-quick file parser/formatter; UAPI server so the stock `wg` tool can manage a device |
+| `javaguard-tun` | Optional, Linux: `LinuxTun`, a kernel TUN interface as the device's tun, and `HostNetwork` for addresses, routes, DNS and hooks. Uses FFM |
 | `javaguard-cli` | `javaguard genkey | pubkey | genpsk | up <file.conf> [--proxy port]` |
 
 Most applications depend on `javaguard-proxy` and `javaguard-config`, which bring in the rest.
@@ -110,8 +115,26 @@ sudo wg show client
 is deleted.
 
 Keys that would change the operating system (`PostUp`, `Table`, `FwMark`, …) are rejected,
-because javaguard never touches the host's network configuration. `--lenient` skips them
-with a warning instead.
+because in this mode javaguard never touches the host's network configuration. `--lenient`
+skips them with a warning instead.
+
+### A real interface (Linux)
+
+```bash
+sudo javaguard-cli/build/install/javaguard/bin/javaguard up wg0.conf --tun
+```
+
+`--tun` creates interface `wg0` and configures it like wg-quick: `Address`, `MTU`, `DNS`
+(through `resolvectl` or `resolvconf`), and a route for every `AllowedIPs` prefix, in the main
+table or the one `Table` names (`Table = off` adds none). The interface and its routes disappear
+when javaguard exits. `PreUp`, `PostUp`, `PreDown` and `PostDown` run only with
+`--allow-hooks`. Not supported yet: routing all traffic (`0.0.0.0/0`, `::/0`), `FwMark` and
+`SaveConfig`. Embedded use:
+
+```java
+LinuxTun tun = LinuxTun.open("wg0", 1420);   // run with --enable-native-access=com.skanavi.javaguard.tun
+Device device = Device.builder().privateKey(key).bind(UdpBind.open(0)).tun(tun).build();
+```
 
 ## Design notes
 
@@ -122,7 +145,7 @@ with a warning instead.
 - **TCP:** RFC 9293 with NewReno and SACK recovery, delayed ACKs, window scaling and keepalives.
   There is no CUBIC yet, so throughput on lossy long-RTT links follows Reno.
 - **Not implemented:** IP fragmentation (fragments are dropped) and TCP DNS fallback for
-  truncated answers.
+  truncated answers. OS interfaces on macOS and Windows.
 
 ## Building
 

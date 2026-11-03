@@ -36,6 +36,15 @@ First release.
   `setconf` a running device.
 - `javaguard` CLI: `genkey`, `genpsk`, `pubkey`, `up` (with `--proxy`).
 
+### OS interface (Linux, optional)
+
+- `javaguard-tun`: `LinuxTun`, a kernel TUN interface as the device's tun, and `HostNetwork`,
+  which sets addresses, MTU, routes, DNS and hooks the way wg-quick does. The only module that
+  uses native code (FFM).
+- `WgQuickConfig.parseForHost` keeps `Table`, `FwMark`, hooks and `SaveConfig` in
+  `HostSettings`.
+- CLI: `javaguard up <file> --tun [--allow-hooks]`.
+
 ### Performance (loopback, Apple Silicon)
 
 | Path | Throughput |
@@ -52,3 +61,4 @@ Crypto runs in an order-preserving parallel pipeline.
 - CUBIC congestion control.
 - An async socket API.
 - Named-pipe UAPI on Windows.
+- OS interfaces on macOS and Windows; full-tunnel routing and `FwMark` in `--tun` mode.

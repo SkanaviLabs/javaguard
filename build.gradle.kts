@@ -2,7 +2,7 @@
 // staging repository with POMs, jars, sources, javadoc, checksums and signatures. See RELEASING.md.
 
 val staging = layout.buildDirectory.dir("staging-deploy")
-val published = listOf("javaguard-crypto", "javaguard-core", "javaguard-netstack", "javaguard-config", "javaguard-proxy", "javaguard-cli")
+val published = listOf("javaguard-crypto", "javaguard-core", "javaguard-netstack", "javaguard-config", "javaguard-proxy", "javaguard-tun", "javaguard-cli")
 
 // Staging starts empty on every publish, so files from an earlier run can never reach a bundle.
 tasks.register<Delete>("cleanStaging") {

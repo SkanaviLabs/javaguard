@@ -33,19 +33,67 @@ import java.util.Set;
  * PostUp}, {@code PreDown}, {@code PostDown}, {@code SaveConfig}) and {@code FwMark} have no
  * meaning for an embedded tunnel. {@link #parse(String)} rejects them; {@link #parseLenient(String,
  * List)} skips them and reports a warning instead. {@code Address} and {@code DNS} are kept for the
- * userspace network stack.
+ * userspace network stack. {@link #parseForHost(String)} keeps them in {@link #host()}, for running
+ * the tunnel as an operating-system interface.
  *
  * @param iface the {@code [Interface]} section
  * @param peers the {@code [Peer]} sections, in file order
+ * @param host the OS-level {@code [Interface]} keys; {@link HostSettings#NONE} unless parsed by
+ *     {@link #parseForHost(String)}
  */
-public record WgQuickConfig(InterfaceSection iface, List<PeerSection> peers) {
+public record WgQuickConfig(InterfaceSection iface, List<PeerSection> peers, HostSettings host) {
   private static final Set<String> OS_KEYS =
       Set.of("fwmark", "table", "preup", "postup", "predown", "postdown", "saveconfig");
 
   /** Copies the peer list. */
   public WgQuickConfig {
     Objects.requireNonNull(iface, "iface");
+    Objects.requireNonNull(host, "host");
     peers = List.copyOf(peers);
+  }
+
+  /** A configuration without OS-level keys. */
+  public WgQuickConfig(InterfaceSection iface, List<PeerSection> peers) {
+    this(iface, peers, HostSettings.NONE);
+  }
+
+  /**
+   * The {@code [Interface]} keys that only make sense when the tunnel is an operating-system
+   * interface, as wg-quick defines them.
+   *
+   * @param table the {@code Table} value ({@code off}, {@code auto}, a number or a name), or {@code
+   *     null} if unset
+   * @param fwMark the {@code FwMark} value, or {@code null} if unset
+   * @param preUp {@code PreUp} commands, in file order
+   * @param postUp {@code PostUp} commands
+   * @param preDown {@code PreDown} commands
+   * @param postDown {@code PostDown} commands
+   * @param saveConfig whether {@code SaveConfig = true}
+   */
+  public record HostSettings(
+      String table,
+      Integer fwMark,
+      List<String> preUp,
+      List<String> postUp,
+      List<String> preDown,
+      List<String> postDown,
+      boolean saveConfig) {
+    /** No OS-level keys. */
+    public static final HostSettings NONE =
+        new HostSettings(null, null, List.of(), List.of(), List.of(), List.of(), false);
+
+    /** Copies lists. */
+    public HostSettings {
+      preUp = List.copyOf(preUp);
+      postUp = List.copyOf(postUp);
+      preDown = List.copyOf(preDown);
+      postDown = List.copyOf(postDown);
+    }
+
+    /** Whether any hook command is set. */
+    public boolean hasHooks() {
+      return !preUp.isEmpty() || !postUp.isEmpty() || !preDown.isEmpty() || !postDown.isEmpty();
+    }
   }
 
   /**
@@ -159,7 +207,17 @@ public record WgQuickConfig(InterfaceSection iface, List<PeerSection> peers) {
    * @throws ConfigException on any syntax error, unknown key, invalid value, or OS-level key
    */
   public static WgQuickConfig parse(String text) throws ConfigException {
-    return new Parser(null).parse(text);
+    return new Parser(null, false).parse(text);
+  }
+
+  /**
+   * Parses configuration text, keeping OS-level keys in {@link #host()}. Nothing is executed or
+   * changed by parsing; acting on those keys is the caller's job.
+   *
+   * @throws ConfigException on any syntax error, unknown key or invalid value
+   */
+  public static WgQuickConfig parseForHost(String text) throws ConfigException {
+    return new Parser(null, true).parse(text);
   }
 
   /**
@@ -168,7 +226,7 @@ public record WgQuickConfig(InterfaceSection iface, List<PeerSection> peers) {
    */
   public static WgQuickConfig parseLenient(String text, List<String> warnings)
       throws ConfigException {
-    return new Parser(Objects.requireNonNull(warnings)).parse(text);
+    return new Parser(Objects.requireNonNull(warnings), false).parse(text);
   }
 
   /** Resolves every peer; see {@link PeerSection#resolve()}. */
@@ -205,6 +263,19 @@ public record WgQuickConfig(InterfaceSection iface, List<PeerSection> peers) {
     }
     if (iface.mtu() != null) {
       sb.append("MTU = ").append(iface.mtu()).append('\n');
+    }
+    if (host.table() != null) {
+      sb.append("Table = ").append(host.table()).append('\n');
+    }
+    if (host.fwMark() != null) {
+      sb.append("FwMark = 0x").append(Integer.toHexString(host.fwMark())).append('\n');
+    }
+    host.preUp().forEach(c -> sb.append("PreUp = ").append(c).append('\n'));
+    host.postUp().forEach(c -> sb.append("PostUp = ").append(c).append('\n'));
+    host.preDown().forEach(c -> sb.append("PreDown = ").append(c).append('\n'));
+    host.postDown().forEach(c -> sb.append("PostDown = ").append(c).append('\n'));
+    if (host.saveConfig()) {
+      sb.append("SaveConfig = true\n");
     }
     for (PeerSection p : peers) {
       sb.append("\n[Peer]\n");
@@ -247,6 +318,7 @@ public record WgQuickConfig(InterfaceSection iface, List<PeerSection> peers) {
 
   private static final class Parser {
     private final List<String> warnings;
+    private final boolean keepHostKeys;
     private String section;
     private int lineNo;
 
@@ -258,6 +330,13 @@ public record WgQuickConfig(InterfaceSection iface, List<PeerSection> peers) {
     private final List<InetAddress> dns = new ArrayList<>();
     private final List<String> dnsSearch = new ArrayList<>();
     private Integer mtu;
+    private String table;
+    private Integer fwMark;
+    private final List<String> preUp = new ArrayList<>();
+    private final List<String> postUp = new ArrayList<>();
+    private final List<String> preDown = new ArrayList<>();
+    private final List<String> postDown = new ArrayList<>();
+    private boolean saveConfig;
 
     // current [Peer] state
     private final List<PeerSection> peers = new ArrayList<>();
@@ -268,8 +347,9 @@ public record WgQuickConfig(InterfaceSection iface, List<PeerSection> peers) {
     private List<IpPrefix> allowedIps;
     private Duration keepalive;
 
-    Parser(List<String> warnings) {
+    Parser(List<String> warnings, boolean keepHostKeys) {
       this.warnings = warnings;
+      this.keepHostKeys = keepHostKeys;
     }
 
     WgQuickConfig parse(String text) throws ConfigException {
@@ -314,7 +394,11 @@ public record WgQuickConfig(InterfaceSection iface, List<PeerSection> peers) {
         throw new ConfigException(0, "[Interface] has no PrivateKey");
       }
       return new WgQuickConfig(
-          new InterfaceSection(privateKey, listenPort, addresses, dns, dnsSearch, mtu), peers);
+          new InterfaceSection(privateKey, listenPort, addresses, dns, dnsSearch, mtu),
+          peers,
+          keepHostKeys
+              ? new HostSettings(table, fwMark, preUp, postUp, preDown, postDown, saveConfig)
+              : HostSettings.NONE);
     }
 
     private void startSection(String line) throws ConfigException {
@@ -355,7 +439,46 @@ public record WgQuickConfig(InterfaceSection iface, List<PeerSection> peers) {
                       }
                     });
         case "mtu" -> mtu = parseInt(value, 576, 65535, "MTU");
+        default -> {
+          if (keepHostKeys) {
+            hostKey(key, value);
+          } else {
+            unsupported(key);
+          }
+        }
+      }
+    }
+
+    private void hostKey(String key, String value) {
+      switch (key) {
+        case "table" -> {
+          if (!value.matches("[A-Za-z0-9_.-]+")) {
+            throw new IllegalArgumentException("invalid Table: " + value);
+          }
+          table = value;
+        }
+        case "fwmark" -> fwMark = value.equalsIgnoreCase("off") ? null : parseMark(value);
+        case "preup" -> preUp.add(value);
+        case "postup" -> postUp.add(value);
+        case "predown" -> preDown.add(value);
+        case "postdown" -> postDown.add(value);
+        case "saveconfig" -> saveConfig = Boolean.parseBoolean(value);
         default -> unsupported(key);
+      }
+    }
+
+    private static int parseMark(String value) {
+      try {
+        long v =
+            value.startsWith("0x") || value.startsWith("0X")
+                ? Long.parseLong(value.substring(2), 16)
+                : Long.parseLong(value);
+        if (v < 0 || v > 0xFFFFFFFFL) {
+          throw new IllegalArgumentException("FwMark out of range: " + value);
+        }
+        return (int) v;
+      } catch (NumberFormatException e) {
+        throw new IllegalArgumentException("invalid FwMark: " + value, e);
       }
     }
 
