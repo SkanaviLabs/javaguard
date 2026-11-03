@@ -75,6 +75,45 @@ class DeviceSimulationTest {
   }
 
   @Test
+  void independentTunnelsWithIdenticalInnerAddressesRekeyWithoutCrossTalk() {
+    Simulation s = new Simulation();
+    int pairs = 4;
+    List<Simulation.Node> clients = new ArrayList<>();
+    List<Simulation.Node> servers = new ArrayList<>();
+    List<Set<Integer>> sessions = new ArrayList<>();
+    List<List<String>> expected = new ArrayList<>();
+    List<List<String>> received = new ArrayList<>();
+    for (int i = 0; i < pairs; i++) {
+      Simulation.Node client = s.node("192.0.2." + (10 + i), "10.0.0.1");
+      Simulation.Node server = s.node("192.0.2." + (20 + i), "10.0.0.2");
+      s.link(client, server);
+      clients.add(client);
+      servers.add(server);
+      sessions.add(new HashSet<>());
+      expected.add(new ArrayList<>());
+      received.add(new ArrayList<>());
+    }
+
+    for (int t = 0; t < 300; t++) {
+      for (int i = 0; i < pairs; i++) {
+        String message = "tunnel" + i + "-" + t;
+        clients.get(i).send(servers.get(i), message);
+        expected.get(i).add(message);
+      }
+      s.run(ofSeconds(1));
+      for (int i = 0; i < pairs; i++) {
+        received.get(i).addAll(servers.get(i).received());
+        sessions.get(i).add(clients.get(i).peer(servers.get(i)).currentKeypair().localIndex());
+      }
+    }
+
+    for (int i = 0; i < pairs; i++) {
+      assertThat(received.get(i)).isEqualTo(expected.get(i));
+      assertThat(sessions.get(i)).hasSizeGreaterThanOrEqualTo(2);
+    }
+  }
+
+  @Test
   void oneWayTrafficFromTheResponderSurvivesRekeying() {
     a.send(b, "start");
     sim.run(ofMillis(1));
