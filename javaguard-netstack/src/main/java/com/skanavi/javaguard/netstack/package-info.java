@@ -4,6 +4,6 @@
 /**
  * A userspace network stack for javaguard: {@link com.skanavi.javaguard.netstack.Netstack} is a
  * {@link com.skanavi.javaguard.core.Tun} that gives the application its own IP addresses inside the
- * tunnel, with ICMP echo, UDP sockets and a DNS resolver. TCP follows in a later release.
+ * tunnel, with ICMP echo, UDP sockets, TCP streams and a DNS resolver.
  */
 package com.skanavi.javaguard.netstack;
