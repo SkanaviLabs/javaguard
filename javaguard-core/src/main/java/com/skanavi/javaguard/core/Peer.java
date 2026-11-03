@@ -3,6 +3,9 @@
 
 package com.skanavi.javaguard.core;
 
+// Portions derived from wireguard-go (https://git.zx2c4.com/wireguard-go/),
+// Copyright (C) 2017-2025 WireGuard LLC. MIT.
+
 import static com.skanavi.javaguard.core.noise.Protocol.KEEPALIVE_TIMEOUT;
 import static com.skanavi.javaguard.core.noise.Protocol.REJECT_AFTER_MESSAGES;
 import static com.skanavi.javaguard.core.noise.Protocol.REJECT_AFTER_TIME;

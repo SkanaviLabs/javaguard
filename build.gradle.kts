@@ -1,6 +1,8 @@
 // Release bundle for the Maven Central Portal (https://central.sonatype.com): a zip of the
 // staging repository with POMs, jars, sources, javadoc, checksums and signatures. See RELEASING.md.
 
+import java.util.zip.ZipFile
+
 val staging = layout.buildDirectory.dir("staging-deploy")
 val published = listOf("javaguard-crypto", "javaguard-core", "javaguard-netstack", "javaguard-config", "javaguard-proxy", "javaguard-tun", "javaguard-cli")
 
@@ -35,6 +37,13 @@ val verifyCentralBundle = tasks.register("verifyCentralBundle") {
                     if (!dir.resolve("${file.name}.$sum").isFile) problems += "missing ${file.name}.$sum"
                 }
                 if (dir.resolve("${file.name}.asc").isFile) signed++ else problems += "missing ${file.name}.asc"
+                if (suffix == ".jar") {
+                    ZipFile(file).use { zip ->
+                        for (entry in listOf("META-INF/LICENSE", "META-INF/THIRD_PARTY_NOTICES.md")) {
+                            if (zip.getEntry(entry) == null) problems += "missing $entry in ${file.name}"
+                        }
+                    }
+                }
             }
             val pom = dir.resolve("$artifact-$version.pom")
             if (pom.isFile) {

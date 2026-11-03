@@ -3,6 +3,9 @@
 
 package com.skanavi.javaguard.core;
 
+// Portions derived from wireguard-go (https://git.zx2c4.com/wireguard-go/),
+// Copyright (C) 2017-2025 WireGuard LLC. MIT.
+
 /**
  * Sliding-window replay filter for transport counters (RFC 6479 bitmap), sized like the Linux
  * implementation: a ring of 128 64-bit blocks tracking the last 8128 counters. Counters are

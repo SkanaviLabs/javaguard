@@ -3,6 +3,9 @@
 
 package com.skanavi.javaguard.core;
 
+// Portions derived from wireguard-go (https://git.zx2c4.com/wireguard-go/),
+// Copyright (C) 2017-2025 WireGuard LLC. MIT.
+
 import com.skanavi.javaguard.core.noise.Keypair;
 import com.skanavi.javaguard.core.noise.Protocol;
 import java.util.concurrent.atomic.AtomicLong;

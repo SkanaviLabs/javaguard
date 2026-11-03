@@ -3,6 +3,9 @@
 
 package com.skanavi.javaguard.core.noise;
 
+// Portions derived from wireguard-go (https://git.zx2c4.com/wireguard-go/),
+// Copyright (C) 2017-2025 WireGuard LLC. MIT.
+
 import java.security.SecureRandom;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.random.RandomGenerator;

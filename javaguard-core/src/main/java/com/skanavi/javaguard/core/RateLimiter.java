@@ -3,6 +3,9 @@
 
 package com.skanavi.javaguard.core;
 
+// Portions derived from wireguard-go (https://git.zx2c4.com/wireguard-go/),
+// Copyright (C) 2017-2025 WireGuard LLC. MIT.
+
 import com.skanavi.javaguard.core.noise.TimeSource;
 import java.net.InetAddress;
 import java.util.concurrent.ConcurrentHashMap;

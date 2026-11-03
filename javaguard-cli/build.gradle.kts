@@ -21,6 +21,16 @@ application {
     applicationDefaultJvmArgs = listOf("--enable-native-access=com.skanavi.javaguard.tun")
 }
 
+// The CLI zip is a distribution of its own and needs the license and notices at its root.
+distributions {
+    main {
+        contents {
+            from(rootProject.file("LICENSE"))
+            from(rootProject.file("THIRD_PARTY_NOTICES.md"))
+        }
+    }
+}
+
 tasks.named<Test>("interopTest") {
     dependsOn(tasks.installDist)
     systemProperty(

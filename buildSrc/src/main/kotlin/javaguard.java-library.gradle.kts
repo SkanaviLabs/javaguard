@@ -44,6 +44,9 @@ tasks.withType<Jar>().configureEach {
             "Implementation-Vendor" to "AI Security Engineering LLC dba Skanavi",
         )
     }
+    // MIT and the upstream notices must travel with every distributed copy.
+    from(rootProject.file("LICENSE")) { into("META-INF") }
+    from(rootProject.file("THIRD_PARTY_NOTICES.md")) { into("META-INF") }
 }
 
 tasks.withType<Javadoc>().configureEach {

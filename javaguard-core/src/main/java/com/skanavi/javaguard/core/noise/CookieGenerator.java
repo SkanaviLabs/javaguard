@@ -3,6 +3,9 @@
 
 package com.skanavi.javaguard.core.noise;
 
+// Portions derived from wireguard-go (https://git.zx2c4.com/wireguard-go/),
+// Copyright (C) 2017-2025 WireGuard LLC. MIT.
+
 import com.skanavi.javaguard.crypto.Blake2s;
 import com.skanavi.javaguard.crypto.PublicKey;
 import com.skanavi.javaguard.crypto.XChaCha20Poly1305;

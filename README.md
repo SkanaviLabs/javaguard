@@ -212,7 +212,10 @@ virtual time). Gradle downloads a JDK 25 toolchain if needed.
 ## License
 
 MIT. See [LICENSE](LICENSE). Copyright © 2026 Stanislav Yurin, AI Security Engineering LLC dba
-Skanavi.
+Skanavi. Third-party notices, including the MIT notice for code derived from
+[wireguard-go](https://git.zx2c4.com/wireguard-go/), are in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-"WireGuard" is a registered trademark of Jason A. Donenfeld. javaguard is an independent
-implementation and is not affiliated with or endorsed by the WireGuard project.
+"WireGuard" and the "WireGuard" logo are registered trademarks of Jason A. Donenfeld. javaguard is
+an independent implementation and is not affiliated with, endorsed by, or sponsored by the
+WireGuard project or its developers. See <https://www.wireguard.com/>.

@@ -70,6 +70,8 @@ manual steps.
    - its POM, jar, `-sources.jar` and `-javadoc.jar`;
    - MD5 and SHA-1 checksums;
    - an `.asc` signature;
+   - the MIT license and third-party notices inside every jar (`META-INF/LICENSE`,
+     `META-INF/THIRD_PARTY_NOTICES.md`);
    - the required POM elements.
 
 4. **Upload.** In the Central Portal open *Publish → Upload Deployment*, choose the zip, and

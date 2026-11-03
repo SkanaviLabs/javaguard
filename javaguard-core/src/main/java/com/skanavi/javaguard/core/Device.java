@@ -3,6 +3,9 @@
 
 package com.skanavi.javaguard.core;
 
+// Portions derived from wireguard-go (https://git.zx2c4.com/wireguard-go/),
+// Copyright (C) 2017-2025 WireGuard LLC. MIT.
+
 import com.skanavi.javaguard.core.noise.CookieChecker;
 import com.skanavi.javaguard.core.noise.CookieReply;
 import com.skanavi.javaguard.core.noise.Handshake;

@@ -3,6 +3,9 @@
 
 package com.skanavi.javaguard.core.noise;
 
+// Portions derived from wireguard-go (https://git.zx2c4.com/wireguard-go/),
+// Copyright (C) 2017-2025 WireGuard LLC. MIT.
+
 /** Cookie reply (type 3, 64 bytes): receiver index, 24-byte nonce, encrypted cookie. */
 public final class CookieReply {
   /** Encoded length in bytes. */

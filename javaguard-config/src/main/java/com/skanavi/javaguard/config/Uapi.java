@@ -3,6 +3,9 @@
 
 package com.skanavi.javaguard.config;
 
+// Portions derived from wireguard-go (https://git.zx2c4.com/wireguard-go/),
+// Copyright (C) 2017-2025 WireGuard LLC. MIT.
+
 import com.skanavi.javaguard.core.Addresses;
 import com.skanavi.javaguard.core.Bind;
 import com.skanavi.javaguard.core.Device;

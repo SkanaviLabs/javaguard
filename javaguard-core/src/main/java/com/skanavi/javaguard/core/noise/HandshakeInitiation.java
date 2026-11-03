@@ -3,6 +3,9 @@
 
 package com.skanavi.javaguard.core.noise;
 
+// Portions derived from wireguard-go (https://git.zx2c4.com/wireguard-go/),
+// Copyright (C) 2017-2025 WireGuard LLC. MIT.
+
 /**
  * Handshake initiation (type 1, 148 bytes): sender index, unencrypted ephemeral, encrypted static
  * key, encrypted TAI64N timestamp, mac1, mac2.
