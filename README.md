@@ -141,6 +141,7 @@ virtual time). Gradle downloads a JDK 25 toolchain if needed.
 | `./gradlew interopTest` | Docker. Kernel WireGuard and `wireguard-go` in both roles; ping, UDP, DNS, TCP (with 1% loss), the `wg` tool against `javaguard up`, and `HttpClient`/`curl` through the proxy. Add `-PlongInterop=true` for a 260 s run across rekeys |
 | `./gradlew fuzz` | Jazzer, 60 s per target |
 | `./gradlew :javaguard-netstack:soakTest -PsoakMinutes=N` | Long stability run with leak checks |
+| `./gradlew :javaguard-proxy:remoteTest -PremoteEndpoint=…` | Against a real peer over the Internet; see `scripts/remote-peer/` |
 | `./gradlew jmh` | Microbenchmarks |
 | `./gradlew :javaguard-core:throughput` | End-to-end throughput |
 
