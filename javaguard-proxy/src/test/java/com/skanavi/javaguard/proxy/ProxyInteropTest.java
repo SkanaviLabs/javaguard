@@ -62,14 +62,14 @@ class ProxyInteropTest {
         LocalProxy proxy = LocalProxy.builder(stack).build()) {
       peer.exec(
           "mkdir -p /www && echo 'plain hello' > /www/index.html"
+              + " && echo 'secure hello' > /www/secure.txt"
               + " && (busybox-extras httpd -f -p 10.9.0.2:8080 -h /www >/dev/null 2>&1 &)"
               + " && openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=web.test"
               + " -addext subjectAltName=DNS:web.test -keyout /k.pem -out /c.pem 2>/dev/null"
               + " && cat /c.pem /k.pem > /tls.pem"
-              + " && printf '#!/bin/sh\\nprintf \"HTTP/1.0 200 OK\\\\r\\\\nContent-Type: text/plain\\\\r\\\\n\\\\r\\\\nsecure hello\\\\n\"\\n' > /serve.sh"
-              + " && chmod +x /serve.sh"
+              // TLS in front of the same httpd, which reads each request before answering.
               + " && (socat OPENSSL-LISTEN:8443,bind=10.9.0.2,cert=/tls.pem,verify=0,fork,reuseaddr"
-              + " EXEC:/serve.sh >/dev/null 2>&1 &)"
+              + " TCP:10.9.0.2:8080 >/dev/null 2>&1 &)"
               + " && (dnsmasq --no-resolv --no-hosts --user=root --listen-address=10.9.0.2"
               + " --bind-interfaces --host-record=web.test,10.9.0.2)");
       String certificate = peer.exec("cat /c.pem");
@@ -96,7 +96,7 @@ class ProxyInteropTest {
       assertThat(plain.body()).isEqualTo("plain hello\n");
       HttpResponse<String> secure =
           http.send(
-              HttpRequest.newBuilder(URI.create("https://web.test:8443/")).build(),
+              HttpRequest.newBuilder(URI.create("https://web.test:8443/secure.txt")).build(),
               HttpResponse.BodyHandlers.ofString());
       assertThat(secure.statusCode()).isEqualTo(200);
       assertThat(secure.body()).isEqualTo("secure hello\n");
@@ -110,7 +110,12 @@ class ProxyInteropTest {
       assertThat(curl("-x", "http://" + address, "http://web.test:8080/index.html"))
           .isEqualTo("plain hello\n");
       assertThat(
-              curl("-x", "http://" + address, "--cacert", ca.toString(), "https://web.test:8443/"))
+              curl(
+                  "-x",
+                  "http://" + address,
+                  "--cacert",
+                  ca.toString(),
+                  "https://web.test:8443/secure.txt"))
           .isEqualTo("secure hello\n");
       assertThat(
               curl(
@@ -118,7 +123,7 @@ class ProxyInteropTest {
                   address,
                   "--cacert",
                   ca.toString(),
-                  "https://web.test:8443/"))
+                  "https://web.test:8443/secure.txt"))
           .isEqualTo("secure hello\n");
     }
   }
