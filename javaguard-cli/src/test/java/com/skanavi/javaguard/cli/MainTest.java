@@ -65,4 +65,21 @@ class MainTest {
     assertThat(run("", "up", noAddress.toString(), "--proxy", "1080", "--no-uapi")).isEqualTo(1);
     assertThat(err.toString()).contains("--proxy needs an Address");
   }
+
+  @Test
+  void tunModeChecksItsOptions(@TempDir Path dir) throws Exception {
+    Path conf =
+        Files.writeString(
+            dir.resolve("wg0.conf"),
+            "[Interface]\nPrivateKey = " + PrivateKey.generate().toBase64() + "\n");
+    assertThat(run("", "up", conf.toString(), "--allow-hooks")).isEqualTo(1);
+    assertThat(err.toString()).contains("--allow-hooks only applies with --tun");
+    err.reset();
+    assertThat(run("", "up", conf.toString(), "--tun", "--proxy", "1080")).isEqualTo(1);
+    if (System.getProperty("os.name").equals("Linux")) {
+      assertThat(err.toString()).contains("cannot be combined with --tun");
+    } else {
+      assertThat(err.toString()).contains("--tun is not supported on").contains("needs Linux");
+    }
+  }
 }

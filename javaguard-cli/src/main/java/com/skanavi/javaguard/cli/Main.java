@@ -7,13 +7,17 @@ import com.skanavi.javaguard.config.ConfigException;
 import com.skanavi.javaguard.config.UapiServer;
 import com.skanavi.javaguard.config.WgQuickConfig;
 import com.skanavi.javaguard.core.Device;
+import com.skanavi.javaguard.core.IpPrefix;
 import com.skanavi.javaguard.core.PacketPipe;
+import com.skanavi.javaguard.core.PeerConfig;
 import com.skanavi.javaguard.core.Tun;
 import com.skanavi.javaguard.core.UdpBind;
 import com.skanavi.javaguard.crypto.PresharedKey;
 import com.skanavi.javaguard.crypto.PrivateKey;
 import com.skanavi.javaguard.netstack.Netstack;
 import com.skanavi.javaguard.proxy.LocalProxy;
+import com.skanavi.javaguard.tun.HostNetwork;
+import com.skanavi.javaguard.tun.LinuxTun;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.PrintStream;
@@ -40,16 +44,24 @@ public final class Main {
           --name <name>        interface name (default: file name without .conf)
           --socket <path>      UAPI socket (default: /var/run/wireguard/<name>.sock)
           --no-uapi            do not serve the UAPI socket
-          --lenient            ignore OS-level keys (PostUp, Table, ...) instead of failing
+          --lenient            ignore keys this mode cannot honour instead of failing
           --proxy [host:]port  serve a SOCKS5/HTTP proxy into the tunnel (needs Address);
                                binds 127.0.0.1 unless a host is given
           --proxy-auth u:p     require these proxy credentials
+          --tun                create a real network interface instead of a userspace
+                               stack (Linux; needs root or CAP_NET_ADMIN)
+          --allow-hooks        with --tun, run PreUp/PostUp/PreDown/PostDown commands
         help                   show this text
 
       'up' runs until interrupted or until its UAPI socket is deleted. Use the
       standard wg(8) tool to inspect and change it: wg show <name>. If the
       configuration has an Address, a userspace network stack with that address
       answers pings inside the tunnel.
+
+      With --tun, the interface gets the Address, MTU and DNS from the file, and a
+      route for every AllowedIPs prefix (Table = off for none, or a table number).
+      Routes that would carry all traffic (0.0.0.0/0, ::/0) are not supported yet.
+      Every program on the host can then use the tunnel directly.
       """;
 
   private Main() {}
@@ -110,6 +122,8 @@ public final class Main {
     boolean lenient = false;
     String proxySpec = null;
     String proxyAuth = null;
+    boolean tunMode = false;
+    boolean allowHooks = false;
     for (int i = 1; i < args.length; i++) {
       switch (args[i]) {
         case "--name" -> name = value(args, ++i, "--name");
@@ -118,6 +132,8 @@ public final class Main {
         case "--lenient" -> lenient = true;
         case "--proxy" -> proxySpec = value(args, ++i, "--proxy");
         case "--proxy-auth" -> proxyAuth = value(args, ++i, "--proxy-auth");
+        case "--tun" -> tunMode = true;
+        case "--allow-hooks" -> allowHooks = true;
         default -> {
           if (args[i].startsWith("-") || file != null) {
             throw new IllegalArgumentException("unexpected argument '" + args[i] + "'");
@@ -136,10 +152,32 @@ public final class Main {
       throw new IllegalArgumentException("invalid interface name '" + name + "'");
     }
 
+    if (tunMode) {
+      if (!LinuxTun.isSupported()) {
+        throw new IllegalArgumentException(
+            "--tun is not supported on "
+                + System.getProperty("os.name")
+                + " "
+                + System.getProperty("os.arch")
+                + " yet; it needs Linux on x86_64 or aarch64");
+      }
+      if (proxySpec != null) {
+        throw new IllegalArgumentException(
+            "--proxy needs the userspace network stack and cannot be combined with --tun");
+      }
+    } else if (allowHooks) {
+      throw new IllegalArgumentException("--allow-hooks only applies with --tun");
+    }
+
     String text = Files.readString(file, StandardCharsets.UTF_8);
     List<String> warnings = new ArrayList<>();
     WgQuickConfig config =
-        lenient ? WgQuickConfig.parseLenient(text, warnings) : WgQuickConfig.parse(text);
+        tunMode
+            ? WgQuickConfig.parseForHost(text)
+            : lenient ? WgQuickConfig.parseLenient(text, warnings) : WgQuickConfig.parse(text);
+    if (tunMode) {
+      checkHostKeys(config.host(), lenient, allowHooks, warnings);
+    }
     warnings.forEach(w -> err.println("javaguard: warning: " + w));
 
     int mtu = config.iface().mtu() != null ? config.iface().mtu() : 1420;
@@ -151,10 +189,16 @@ public final class Main {
     if (proxyAuth != null && !proxyAuth.contains(":")) {
       throw new IllegalArgumentException("--proxy-auth must be user:password");
     }
+    List<PeerConfig> peers = config.resolvePeers();
+    HostNetwork host = null;
     Tun tun;
     PacketPipe pipe = null;
     Netstack stack = null;
-    if (config.iface().addresses().isEmpty()) {
+    if (tunMode) {
+      host = hostNetwork(name, mtu, config, peers, allowHooks, err);
+      host.preUp();
+      tun = LinuxTun.open(name, mtu);
+    } else if (config.iface().addresses().isEmpty()) {
       tun = pipe = new PacketPipe(mtu);
     } else {
       tun =
@@ -166,17 +210,26 @@ public final class Main {
                   .mtu(mtu)
                   .build();
     }
-    Device device =
-        Device.builder()
-            .privateKey(config.iface().privateKey())
-            .bind(UdpBind.open(port))
-            .tun(tun)
-            .build();
+    Device device;
+    try {
+      device =
+          Device.builder()
+              .privateKey(config.iface().privateKey())
+              .bind(UdpBind.open(port))
+              .tun(tun)
+              .build();
+    } catch (IOException | RuntimeException e) {
+      tun.close();
+      throw e;
+    }
     UapiServer server = null;
     LocalProxy proxy = null;
     try {
-      config.addPeersTo(device);
+      peers.forEach(device::addPeer);
       device.start();
+      if (host != null) {
+        host.up();
+      }
       if (proxyBind != null) {
         LocalProxy.Builder pb = LocalProxy.builder(stack).bind(proxyBind);
         if (proxyAuth != null) {
@@ -194,16 +247,25 @@ public final class Main {
       if (proxy != null) {
         proxy.close();
       }
+      if (host != null) {
+        host.down();
+      }
       device.close();
+      if (host != null) {
+        host.postDown();
+      }
       throw e;
     }
 
     Thread drain = pipe == null ? null : drain(pipe);
     UapiServer finalServer = server;
     LocalProxy finalProxy = proxy;
+    HostNetwork finalHost = host;
     Runtime.getRuntime()
         .addShutdownHook(
-            new Thread(() -> shutdown(device, finalServer, finalProxy, drain), "javaguard-exit"));
+            new Thread(
+                () -> shutdown(device, finalServer, finalProxy, finalHost, drain),
+                "javaguard-exit"));
 
     err.println(
         "javaguard: "
@@ -213,7 +275,13 @@ public final class Main {
             + ", UDP port "
             + device.listenPort()
             + (server != null ? ", UAPI " + server.path() : ""));
-    if (pipe != null) {
+    if (tunMode) {
+      err.println(
+          "javaguard: interface "
+              + name
+              + " up"
+              + (config.iface().addresses().isEmpty() ? "" : " at " + config.iface().addresses()));
+    } else if (pipe != null) {
       err.println(
           "javaguard: no Address configured, so no network stack: packets arriving through the"
               + " tunnel are discarded");
@@ -241,7 +309,7 @@ public final class Main {
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
     }
-    shutdown(device, server, proxy, drain);
+    shutdown(device, server, proxy, host, drain);
     return 0;
   }
 
@@ -260,7 +328,60 @@ public final class Main {
             });
   }
 
-  private static void shutdown(Device device, UapiServer server, LocalProxy proxy, Thread drain) {
+  /** Rejects or skips OS-level keys that --tun mode does not support yet. */
+  private static void checkHostKeys(
+      WgQuickConfig.HostSettings h, boolean lenient, boolean allowHooks, List<String> warnings) {
+    List<String> problems = new ArrayList<>();
+    if (h.fwMark() != null) {
+      problems.add("FwMark is not supported yet (it needs a mark on the UDP socket)");
+    }
+    if (h.saveConfig()) {
+      problems.add("SaveConfig is not supported");
+    }
+    if (h.hasHooks() && !allowHooks) {
+      problems.add(
+          "the configuration has PreUp/PostUp/PreDown/PostDown commands; pass --allow-hooks to"
+              + " run them");
+    }
+    if (!problems.isEmpty() && !lenient) {
+      throw new IllegalArgumentException(String.join("; ", problems));
+    }
+    problems.forEach(p -> warnings.add(p + "; ignored"));
+  }
+
+  private static HostNetwork hostNetwork(
+      String name,
+      int mtu,
+      WgQuickConfig config,
+      List<PeerConfig> peers,
+      boolean allowHooks,
+      PrintStream err) {
+    List<IpPrefix> routes = new ArrayList<>();
+    List<InetAddress> endpoints = new ArrayList<>();
+    for (PeerConfig p : peers) {
+      routes.addAll(p.allowedIps());
+      if (p.endpoint() != null) {
+        endpoints.add(p.endpoint().getAddress());
+      }
+    }
+    WgQuickConfig.HostSettings h = config.host();
+    HostNetwork.Builder b =
+        HostNetwork.builder(name)
+            .mtu(mtu)
+            .addresses(config.iface().addresses())
+            .routes(routes)
+            .endpoints(endpoints)
+            .table(h.table())
+            .dns(config.iface().dns(), config.iface().dnsSearch())
+            .warnings(w -> err.println("javaguard: warning: " + w));
+    if (allowHooks) {
+      b.hooks(h.preUp(), h.postUp(), h.preDown(), h.postDown());
+    }
+    return b.build();
+  }
+
+  private static void shutdown(
+      Device device, UapiServer server, LocalProxy proxy, HostNetwork host, Thread drain) {
     if (drain != null) {
       drain.interrupt();
     }
@@ -271,9 +392,15 @@ public final class Main {
       if (server != null) {
         server.close();
       }
-      device.close();
+      if (host != null) {
+        host.down();
+      }
+      device.close(); // closing a LinuxTun removes the interface and its routes
     } catch (IOException e) {
       // exiting anyway
+    }
+    if (host != null) {
+      host.postDown();
     }
   }
 

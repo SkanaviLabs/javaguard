@@ -16,6 +16,7 @@ open public issues for security problems.
 | **Network** (anyone who can send UDP to the listen port) | `Device` receive path, handshake processing, cookie logic | read or forge tunnel traffic; exhaust memory or CPU beyond bounded work per packet; learn whether a public key is configured |
 | **Authenticated peer** (holds a configured key) | everything above, plus the netstack (IP, ICMP, UDP, TCP, DNS replies) | send traffic from IPs outside its allowed IPs; exhaust memory beyond per-connection bounds; affect other peers' sessions |
 | **Local host user** (other OS accounts) | the proxy port, if bound beyond loopback, and the UAPI socket path | read the private key (UAPI socket is `rw-------`); use the proxy without credentials when it is exposed |
+| **Authenticated peer, `--tun` mode** | the host's own network stack through the interface, for its allowed IPs | reach the host from addresses outside its allowed IPs; anything the host's firewall would block on another interface |
 
 Out of scope: side channels below the JVM (cache timing, power), a compromised JVM, the host's
 own process memory.
@@ -53,6 +54,29 @@ own process memory.
 | Proxy sessions | 1024 concurrent; HTTP request head 64 KiB |
 | DNS / UAPI parsing | name compression loops capped; UAPI 100k lines of at most 64 KiB |
 
+## Native code and host changes (`javaguard-tun`)
+
+`javaguard-tun` is the only module that calls native code. It is opt-in, and no other library
+module depends on it.
+
+- **Native boundary.** All downcalls are in `LibC`: `open`, `ioctl(TUNSETIFF)`, `read`,
+  `write`, `poll`, `eventfd`, `close`, `strerror`. Buffers are FFM segments with bounds checks;
+  the only struct is `ifreq` (layout unit-tested). Constants are the x86_64/aarch64 values, and
+  `LinuxTun` refuses other platforms. Grant access with
+  `--enable-native-access=com.skanavi.javaguard.tun`, not `ALL-UNNAMED`, where the module path
+  allows it; the CLI's start scripts do this.
+- **Privileges.** Creating the interface and running `ip` need root or `CAP_NET_ADMIN`. The
+  process keeps those privileges while it runs; javaguard does not drop them.
+- **Host changes.** Addresses, routes, DNS and hooks are applied through `ip`, `resolvectl` or
+  `resolvconf`, with arguments passed as a list, never through a shell. `Table` is restricted
+  to `[A-Za-z0-9_.-]`. Routes that would carry everything or a peer's own endpoint are refused.
+- **Hooks.** `PreUp`/`PostUp`/`PreDown`/`PostDown` are shell commands run as the javaguard
+  process (usually root). The CLI runs them only with `--allow-hooks`. Treat a configuration
+  with hooks like a root shell script: only use trusted files, owned by root and not writable
+  by others.
+- **Exposure.** Unlike the netstack, a TUN interface exposes the host's own services to the
+  peer's allowed IPs. Firewall the interface as you would any other.
+
 ## Fuzzing
 
 Jazzer targets, run with `./gradlew fuzz` (60 s each by default). Each was run for 3 minutes
@@ -73,3 +97,5 @@ during Phase 8 with no findings:
 - `java.net.http.HttpClient` refuses Basic proxy auth for HTTPS tunnels unless the JDK property
   `jdk.http.auth.tunneling.disabledSchemes` is relaxed.
 - No OS-level isolation. javaguard runs in the application's JVM and shares its fate.
+- `--tun` mode does not drop privileges after setup, and does not check the ownership or
+  permissions of a configuration file before running its hooks.

@@ -90,6 +90,17 @@ public final class WireGuardContainer implements AutoCloseable {
     }
   }
 
+  /** The Docker container ID. */
+  public String id() {
+    return id;
+  }
+
+  /** The container's address on the Docker bridge, reachable from other containers. */
+  public String bridgeAddress() throws IOException {
+    return Docker.run(
+        "docker", "inspect", "-f", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", id);
+  }
+
   /** The container's WireGuard public key. */
   public PublicKey publicKey() {
     return key.publicKey();

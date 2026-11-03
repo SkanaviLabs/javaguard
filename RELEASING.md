@@ -1,6 +1,6 @@
 # Releasing to Maven Central
 
-javaguard publishes six artifacts under `com.skanavi.javaguard` through the
+javaguard publishes seven artifacts under `com.skanavi.javaguard` through the
 [Central Portal](https://central.sonatype.com):
 
 - `javaguard-crypto`
@@ -8,6 +8,7 @@ javaguard publishes six artifacts under `com.skanavi.javaguard` through the
 - `javaguard-netstack`
 - `javaguard-config`
 - `javaguard-proxy`
+- `javaguard-tun`
 - `javaguard-cli`
 
 The build creates and checks the upload bundle. Uploading it is the one manual step.
