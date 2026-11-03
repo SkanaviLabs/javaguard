@@ -6,12 +6,14 @@ gives the application its own addresses inside the tunnel, and a local SOCKS5/HT
 unmodified clients such as `curl`, browsers and `java.net.http.HttpClient` use the tunnel.
 
 On Linux (x86_64 and aarch64), the optional `javaguard-tun` module can instead create a real
-network interface, so every program on the host uses the tunnel. It is the one module that calls
+network interface, so other programs on the host can use the tunnel. The WireGuard protocol, crypto
+and packet processing remain the Java implementation; OS interop is limited to creating and
+configuring the TUN interface and reading and writing its packets. It is the one module that calls
 native code (through `java.lang.foreign`) and needs root or `CAP_NET_ADMIN`; only the CLI depends
 on it, and only for `--tun`.
 
-javaguard interoperates with the Linux kernel module and `wireguard-go`. This is tested in both
-roles on every change; see [Testing](#testing).
+javaguard is protocol-compatible with peers running the Linux kernel WireGuard module or
+`wireguard-go`. This is tested in both roles on every change; see [Testing](#testing).
 
 - **Requirements:** Java 25 or later.
 - **License:** MIT.
@@ -31,11 +33,11 @@ roles on every change; see [Testing](#testing).
 
 ## Motivation
 
-WireGuard is usually deployed at the operating-system level, with a kernel module or
-`wireguard-go`, a TUN interface, root, and routes that cover every process on the host. That is
-the right shape for a machine you control, but not for a JVM application that needs a private
-network from an environment it cannot reconfigure: a shared CI runner, a managed container
-platform, a serverless function, or a desktop tool shipped as a single jar.
+WireGuard is usually deployed at the operating-system or container level, with a kernel module or
+`wireguard-go`, a TUN interface, root, and routes that cover every process on the host or require specific rules.  
+javaguard brings it to a JVM applications which need a private
+network from an environment they cannot reconfigure or where this approach can significantly simplify overall deployment: a shared CI runner, a managed container
+platform, a serverless function, desktop tool shipped as a jar or an agent written in Java, Clojure or any other JVM language.
 
 javaguard puts the tunnel inside the process instead. The userspace stack gives the application
 its own addresses without touching host interfaces, routes, or DNS. In this mode the host needs no
@@ -43,14 +45,7 @@ new privileges and there is no native library to load or crash: the same artifac
 JVM runs. Peers, keys and `wg-quick` files are unchanged, so the other end cannot tell the
 difference.
 
-The obvious shortcut, JNI around `wireguard-go` or BoringTun, swaps one Java artifact for a
-per-OS/CPU/libc native library that must be built and loaded at runtime; mismatches fail at
-runtime, and native faults kill the JVM. Every packet crosses the JNI boundary and is usually
-copied, and the path adds a native toolchain and a large unsafe-memory surface to the audit.
-Native access stays confined to the optional Linux TUN interface, where the kernel makes it
-unavoidable; the portable data path remains Java.
-
-`javaguard-tun` is still included for deployments that need a real interface, and it pursues
+`javaguard-tun` is still included for deployments that need a real interface which is generally useful for testing, audit trail compatibility and various experiments, and it pursues
 maximum Java nativity: libc is bound with `java.lang.foreign` downcalls only, with no JNI glue, no
 C sources and no bundled per-platform binaries, and the host side runs `ip`, `resolvectl` and
 `resolvconf` through `ProcessBuilder`. Everything outside those kernel calls is ordinary Java.

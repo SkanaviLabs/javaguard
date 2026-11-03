@@ -34,7 +34,7 @@ val verifyCentralBundle = tasks.register("verifyCentralBundle") {
                 for (sum in listOf("md5", "sha1")) {
                     if (!dir.resolve("${file.name}.$sum").isFile) problems += "missing ${file.name}.$sum"
                 }
-                if (dir.resolve("${file.name}.asc").isFile) signed++
+                if (dir.resolve("${file.name}.asc").isFile) signed++ else problems += "missing ${file.name}.asc"
             }
             val pom = dir.resolve("$artifact-$version.pom")
             if (pom.isFile) {
@@ -45,7 +45,7 @@ val verifyCentralBundle = tasks.register("verifyCentralBundle") {
                 if (text.contains("testFixtures")) problems += "${pom.name} references test fixtures"
             }
         }
-        if (signed == 0) problems += "no signatures (.asc): pass -PsigningKey and -PsigningPassword"
+        if (signed == 0) problems += "no signatures (.asc): pass -Psigning.gnupg.keyName, or -PsigningKey and -PsigningPassword"
         if (problems.isNotEmpty()) {
             throw GradleException("Central bundle is not ready:\n  " + problems.joinToString("\n  "))
         }

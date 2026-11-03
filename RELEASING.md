@@ -11,7 +11,8 @@ javaguard publishes seven artifacts under `com.skanavi.javaguard` through the
 - `javaguard-tun`
 - `javaguard-cli`
 
-The build creates and checks the upload bundle. Uploading it is the one manual step.
+The build creates and checks the upload bundle; uploading and publishing it in the portal are the
+manual steps.
 
 ## One-time setup
 
@@ -68,13 +69,14 @@ The build creates and checks the upload bundle. Uploading it is the one manual s
    `verifyCentralBundle`, which `centralBundle` runs, fails unless every artifact has:
    - its POM, jar, `-sources.jar` and `-javadoc.jar`;
    - MD5 and SHA-1 checksums;
-   - `.asc` signatures;
-   - a complete POM.
+   - an `.asc` signature;
+   - the required POM elements.
 
 4. **Upload.** In the Central Portal open *Publish → Upload Deployment*, choose the zip, and
    select *Publish* after validation passes. Publishing cannot be undone: a released version can
    never be replaced.
-5. Tag the release and attach the CLI distribution (`javaguard-cli/build/distributions/`):
+5. Tag the release and attach the CLI distribution. `centralBundle` does not build it, so run
+   `./gradlew :javaguard-cli:distZip` first; the zip is in `javaguard-cli/build/distributions/`.
 
    ```bash
    git tag -s v1.0.0 -m "javaguard 1.0.0"

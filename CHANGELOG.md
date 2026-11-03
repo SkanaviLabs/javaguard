@@ -8,7 +8,8 @@ First release.
 
 - WireGuard protocol: the Noise_IKpsk2 handshake, cookies (mac1/mac2), all timers from section 6
   of the whitepaper, rekeying, roaming, replay protection and cryptokey routing.
-- Interoperates with the Linux kernel module and `wireguard-go`, as initiator and as responder.
+- Interoperates with peers running the Linux kernel WireGuard module or `wireguard-go`, as
+  initiator and as responder.
 
 ### Embedding API
 
@@ -32,8 +33,8 @@ First release.
 ### Configuration and CLI
 
 - wg-quick configuration files: parsing and formatting.
-- The cross-platform UAPI, served on a Unix socket, so the `wg` tool can show, set, `showconf` and
-  `setconf` a running device.
+- The UAPI protocol, served on a Unix socket, so `wg show`, `wg set`, `wg showconf` and
+  `wg setconf` work against a running device.
 - `javaguard` CLI: `genkey`, `genpsk`, `pubkey`, `up` (with `--proxy`).
 
 ### OS interface (Linux, optional)
@@ -61,4 +62,5 @@ Crypto runs in an order-preserving parallel pipeline.
 - CUBIC congestion control.
 - An async socket API.
 - Named-pipe UAPI on Windows.
-- OS interfaces on macOS and Windows; full-tunnel routing and `FwMark` in `--tun` mode.
+- OS interfaces on macOS and Windows.
+- Full-tunnel routing and `FwMark` in `--tun` mode.
