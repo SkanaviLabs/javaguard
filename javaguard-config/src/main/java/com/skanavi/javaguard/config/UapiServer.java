@@ -18,7 +18,13 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.AclEntry;
+import java.nio.file.attribute.AclEntryPermission;
+import java.nio.file.attribute.AclEntryType;
+import java.nio.file.attribute.AclFileAttributeView;
 import java.nio.file.attribute.PosixFilePermissions;
+import java.util.EnumSet;
+import java.util.List;
 
 /**
  * Serves {@link Uapi} for a device on a Unix domain socket, by convention {@code
@@ -79,6 +85,8 @@ public final class UapiServer implements Closeable {
       server.bind(address);
       if (posix) {
         Files.setPosixFilePermissions(path, PosixFilePermissions.fromString("rw-------"));
+      } else {
+        restrictToOwner(path);
       }
     } catch (IOException | RuntimeException e) {
       server.close();
@@ -94,6 +102,25 @@ public final class UapiServer implements Closeable {
   public static UapiServer start(Device device, Uapi.BindFactory bindFactory, Path path)
       throws IOException {
     return start(new Uapi(device, bindFactory), path);
+  }
+
+  /**
+   * Replaces the ACL of {@code path} with one entry granting its owner full access (Windows, where
+   * there are no POSIX permissions). The socket serves the private key, so it must not inherit a
+   * more permissive ACL from its directory.
+   */
+  static void restrictToOwner(Path path) throws IOException {
+    AclFileAttributeView view = Files.getFileAttributeView(path, AclFileAttributeView.class);
+    if (view == null) {
+      throw new IOException("cannot restrict access to " + path + ": no POSIX or ACL support");
+    }
+    AclEntry owner =
+        AclEntry.newBuilder()
+            .setType(AclEntryType.ALLOW)
+            .setPrincipal(view.getOwner())
+            .setPermissions(EnumSet.allOf(AclEntryPermission.class))
+            .build();
+    view.setAcl(List.of(owner));
   }
 
   private static boolean isServing(UnixDomainSocketAddress address) {

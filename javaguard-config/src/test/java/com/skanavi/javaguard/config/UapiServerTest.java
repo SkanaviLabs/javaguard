@@ -20,8 +20,11 @@ import java.net.UnixDomainSocketAddress;
 import java.nio.channels.Channels;
 import java.nio.channels.SocketChannel;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.AclEntryType;
+import java.nio.file.attribute.AclFileAttributeView;
 import java.nio.file.attribute.PosixFilePermissions;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -52,8 +55,19 @@ class UapiServerTest {
     Path sock = dir.resolve("wg0.sock");
     try (UapiServer server = UapiServer.start(device, UdpBind::open, sock)) {
       assertThat(server.path()).isEqualTo(sock);
-      assertThat(Files.getPosixFilePermissions(sock))
-          .isEqualTo(PosixFilePermissions.fromString("rw-------"));
+      if (FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) {
+        assertThat(Files.getPosixFilePermissions(sock))
+            .isEqualTo(PosixFilePermissions.fromString("rw-------"));
+      } else {
+        AclFileAttributeView acl = Files.getFileAttributeView(sock, AclFileAttributeView.class);
+        assertThat(acl.getAcl())
+            .singleElement()
+            .satisfies(
+                e -> {
+                  assertThat(e.type()).isEqualTo(AclEntryType.ALLOW);
+                  assertThat(e.principal()).isEqualTo(acl.getOwner());
+                });
+      }
       assertThat(exchange(sock, "get=1\n\n"))
           .startsWith("private_key=" + device.privateKey().toHex());
       assertThat(exchange(sock, "get=1\n\n")).endsWith("errno=0\n\n"); // new connection works too
