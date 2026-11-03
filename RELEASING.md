@@ -29,8 +29,9 @@ The build creates and checks the upload bundle. Uploading it is the one manual s
    gpg --keyserver keys.openpgp.org --send-keys <KEY_ID>
    ```
 
-3. **Public repository.** Central requires the POM to name the project URL and SCM. Push the
-   repository somewhere public first and use that URL as `projectUrl` below.
+3. **Public repository.** Central requires the POM to name the project URL and SCM. The
+   repository is <https://github.com/SkanaviLabs/javaguard>, set as `projectUrl` in
+   `gradle.properties`.
 
 ## Each release
 
@@ -53,7 +54,7 @@ The build creates and checks the upload bundle. Uploading it is the one manual s
    ```
 
    ```bash
-   ./gradlew clean centralBundle -PprojectUrl=https://github.com/<org>/javaguard
+   ./gradlew clean centralBundle
    ```
 
    The bundle is written to `build/distributions/javaguard-<version>-central-bundle.zip`.
