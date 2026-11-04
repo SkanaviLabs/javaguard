@@ -29,6 +29,7 @@ javaguard is protocol-compatible with peers running the Linux kernel WireGuard m
 - [Design notes](#design-notes)
 - [Building](#building)
 - [Testing](#testing)
+- [How it compares](#how-it-compares)
 - [License](#license)
 
 ## Motivation
@@ -208,6 +209,53 @@ virtual time). Gradle downloads a JDK 25 toolchain if needed.
 | `./gradlew :javaguard-proxy:remoteTest -PremoteEndpoint=… -PremotePublicKey=… -PremoteKeyFile=…` | Against a real peer over the Internet; see `scripts/remote-peer/` |
 | `./gradlew :javaguard-crypto:jmh` | Microbenchmarks |
 | `./gradlew :javaguard-core:throughput` | End-to-end throughput |
+
+## How it compares
+
+These three projects also run WireGuard in userspace, but none of them implements the whole stack in
+a JVM. Each uses a TUN interface and needs either root or Android's `VpnService`.
+
+Snapshot: chop0/wireguard-java at `495da11` (October 2023), WireGuard/wireguard-android at
+`1.0.20260315`, and wgtunnel/android at 5.8.2 (October 2026).
+
+| | **javaguard** | **[chop0/wireguard-java](https://github.com/chop0/wireguard-java)** | **[WireGuard/wireguard-android](https://github.com/WireGuard/wireguard-android)** | **[wgtunnel/android](https://github.com/wgtunnel/android)** |
+|---|---|---|---|---|
+| Type | JVM library and CLI | JVM library and CLI | Official Android app plus `tunnel` library | Android app for WireGuard and AmneziaWG plus shared `core` library |
+| Protocol engine | Java | Java | Go (`wireguard-go`) or the kernel module | Go (`amneziawg-go`) via JNI |
+| Runtime | Java 25+, any OS with a JVM | Java 21 with preview features, Linux and macOS | Android 8.0+ | Android 8.0+; the core also targets desktop |
+| Privileges | None; `CAP_NET_ADMIN` only for `--tun` | Root (TUN and interface setup) | None; root optional for the kernel backend | None; root or Shizuku optional |
+| Tunnel model | In-process; optional Linux TUN | Host-wide TUN | Android `VpnService` | Android `VpnService` or local proxy |
+| TCP/IP stack | Userspace, in Java | Host kernel | Android OS stack | Android OS stack; gVisor in proxy mode |
+| Proxy | SOCKS5 and HTTP | — | — | SOCKS5 and HTTP |
+| Config | wg-quick, UAPI, stock `wg` | A subset of wg-quick | wg-quick in the app | wg-quick, AmneziaWG, UAPI |
+| Native code | None in the core; FFM for Linux TUN | JNI for TUN, ChaCha20 and Poly1305 | `libwg-go.so` via the NDK | Go and C JNI via the NDK |
+| Distribution | Maven Central modules | Source and native-image build | Play Store and Maven Central | Play, F-Droid and Maven Central |
+| License | MIT | No license file | Apache-2.0 | MIT |
+| Status | 1.0.0, November 2026 | No releases; last commit October 2023 | Actively maintained | 5.8.2, October 2026 |
+
+**chop0/wireguard-java.** It implements WireGuard in Java, but relies on a TUN device and the OS
+TCP/IP stack. Root is required, and there is no userspace netstack, proxy, UAPI, keygen or published
+build. The project has
+not been updated since October 2023 and has no license file; cookies are a TODO, sessions expire
+after a fixed 120 s, and the transport path has no replay window. Its ~5 Gbit/s claim uses JNI crypto
+and the host stack, so it does not compare directly with javaguard's ~1.7 Gbit/s raw and ~1.4 Gbit/s
+TCP, which include Java crypto and the userspace stack. Use it for a small root-run client on
+Linux or macOS, not as an unprivileged JVM library.
+
+**WireGuard/wireguard-android.** The official Android app. WireGuard runs in `wireguard-go` or the
+kernel module; the Java/Kotlin code is UI, config and JNI. Use it for a system-wide Android VPN. Its
+`tunnel` library is Android-only and cannot run on a plain JVM, server or CI runner.
+
+**wgtunnel/android.** A third-party Android client for WireGuard and AmneziaWG, built on
+[wgtunnel/core](https://github.com/wgtunnel/core). The packet engine is Go via JNI (AmneziaWG, a
+`wireguard-go` fork), with gVisor for proxy mode. It has more Android features than javaguard:
+auto-tunneling, multihop, kill switch, split tunneling, split DNS, a local SOCKS5/HTTP proxy and
+Android TV. It is not pure Java or in-process; its JVM/desktop core still ships native libraries.
+
+**Choose javaguard** for an in-process, unprivileged JVM tunnel. **Choose chop0/wireguard-java** for
+a small Java TUN client on a Linux or macOS host where root is available. **Choose
+WireGuard/wireguard-android** for the official Android app. **Choose wgtunnel/android** for an Android
+client with AmneziaWG and extra features.
 
 ## License
 
