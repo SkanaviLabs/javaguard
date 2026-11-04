@@ -34,6 +34,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.LockSupport;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -173,7 +174,8 @@ class TunnelLifecycleTest extends TunnelTestBase {
   /**
    * Junk with a handshake's type and length reaches the device's handshake queue. It fails MAC
    * checks, so this covers queue pressure and neighbours; the cookie reply itself is covered by
-   * {@code DeviceSimulationTest}.
+   * {@code DeviceSimulationTest}. The flood is paced because every tunnel here shares the OS
+   * loopback queue: unpaced, it drops the neighbour's packets before any device sees them.
    */
   @Test
   void floodingOneDeviceLeavesOtherTunnelsAbleToHandshake() throws Exception {
@@ -184,12 +186,17 @@ class TunnelLifecycleTest extends TunnelTestBase {
     AtomicLong sent = new AtomicLong();
     for (int i = 0; i < 4; i++) {
       long seed = i;
-      flooders.add(Thread.ofVirtual().start(() -> flood(port, seed, stop, sent)));
+      // Platform threads: a virtual thread in a send loop never yields its carrier, and with few
+      // cores the flooders would starve this test's own virtual TCP servers.
+      flooders.add(Thread.ofPlatform().daemon().start(() -> flood(port, seed, stop, sent)));
     }
     try {
       await("the flood to start", () -> sent.get() > 1000);
       Pair fresh = pair("fresh");
-      fresh.transfer(new byte[64 << 10]);
+      long end = System.nanoTime() + Duration.ofSeconds(1).toNanos();
+      while (System.nanoTime() < end) {
+        fresh.transfer(new byte[64 << 10]);
+      }
       assertThat(fresh.client.peer(fresh.server).lastHandshake()).isPresent();
     } finally {
       stop.set(true);
@@ -207,11 +214,14 @@ class TunnelLifecycleTest extends TunnelTestBase {
     Random random = new Random(seed);
     try (DatagramSocket socket = new DatagramSocket()) {
       while (!stop.get()) {
-        random.nextBytes(packet);
-        packet[0] = 1;
-        packet[1] = packet[2] = packet[3] = 0;
-        socket.send(new DatagramPacket(packet, packet.length, LOOPBACK, port));
-        sent.incrementAndGet();
+        for (int i = 0; i < 32; i++) {
+          random.nextBytes(packet);
+          packet[0] = 1;
+          packet[1] = packet[2] = packet[3] = 0;
+          socket.send(new DatagramPacket(packet, packet.length, LOOPBACK, port));
+          sent.incrementAndGet();
+        }
+        LockSupport.parkNanos(Duration.ofMillis(1).toNanos());
       }
     } catch (IOException e) {
       throw new AssertionError(e);
