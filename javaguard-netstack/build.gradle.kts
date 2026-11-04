@@ -3,7 +3,7 @@ plugins {
     id("javaguard.publish")
 }
 
-description = "Userspace IPv4/IPv6 network stack for javaguard tunnels: ICMP, UDP, DNS."
+description = "Userspace IPv4/IPv6 network stack for javaguard tunnels: ICMP, UDP, TCP, DNS."
 
 dependencies {
     api(project(":javaguard-core"))

@@ -1,8 +1,8 @@
 // Maven Central publishing for javaguard library modules.
 //
-// ./gradlew publishAllPublicationsToStagingRepository -PprojectUrl=https://...
-// writes signed artifacts to build/staging-deploy (signing needs -PsigningKey/-PsigningPassword,
-// an ASCII-armored secret key). See RELEASING.md.
+// ./gradlew publishAllPublicationsToStagingRepository writes artifacts to build/staging-deploy.
+// projectUrl comes from gradle.properties. Signing needs -Psigning.gnupg.keyName (local gpg), or
+// -PsigningKey/-PsigningPassword (an ASCII-armored secret key). See RELEASING.md.
 
 plugins {
     `maven-publish`
