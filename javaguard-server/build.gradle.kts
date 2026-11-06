@@ -12,3 +12,9 @@ dependencies {
     testImplementation(libs.jetty.server)
     testImplementation(libs.jetty.unixdomain.server)
 }
+
+tasks.test {
+    testLogging {
+        showStandardStreams = true
+    }
+}
