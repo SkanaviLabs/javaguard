@@ -9,6 +9,11 @@
   names go to the upstream unresolved, UDP ASSOCIATE is refused, and a failed upstream fails the
   connection rather than dialing the target directly.
 
+### Fixed
+
+- A `Netstack` listener accepts a new connection that reuses the address pair of one in TIME_WAIT.
+  The SYN used to get a bare ACK, so the connect stalled until it timed out.
+
 ## 1.0.0 (2026-11-03)
 
 First release.

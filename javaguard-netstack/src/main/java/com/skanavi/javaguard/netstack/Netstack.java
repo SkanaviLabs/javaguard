@@ -393,11 +393,11 @@ public final class Netstack implements Tun {
     InetAddress local = ip.dstAddress();
     InetAddress remote = ip.srcAddress();
     TcpConnection c = tcp.get(new TcpKey(local, seg.dstPort(), remote, seg.srcPort()));
-    if (c != null) {
+    TcpListener l = listeners.get(seg.dstPort());
+    if (c != null && (l == null || !c.yieldToNewConnection(seg))) {
       c.onSegment(seg);
       return;
     }
-    TcpListener l = listeners.get(seg.dstPort());
     if (l != null
         && seg.has(TcpSegment.SYN)
         && !seg.has(TcpSegment.ACK)
