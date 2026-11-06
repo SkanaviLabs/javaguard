@@ -81,7 +81,11 @@ class TunnelHostTest {
   }
 
   private Path socketPath() throws IOException {
-    Path dir = Files.createTempDirectory(Path.of("/tmp"), "jg"); // short: paths have a size limit
+    Path tmp = Path.of("/tmp"); // short: paths have a size limit, but Windows has no /tmp
+    Path dir =
+        Files.isDirectory(tmp)
+            ? Files.createTempDirectory(tmp, "jg")
+            : Files.createTempDirectory("jg");
     resources.add(
         () -> {
           Files.deleteIfExists(dir.resolve("s"));
