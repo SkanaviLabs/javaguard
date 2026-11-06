@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `LocalProxy.Builder.upstreamSocks5` sends TCP from both the SOCKS5 and HTTP sides through a SOCKS5
+  proxy reached inside the tunnel, with optional username/password authentication. Target host
+  names go to the upstream unresolved, UDP ASSOCIATE is refused, and a failed upstream fails the
+  connection rather than dialing the target directly.
+
 ## 1.0.0 (2026-11-03)
 
 First release.

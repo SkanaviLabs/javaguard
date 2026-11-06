@@ -30,14 +30,14 @@ import java.util.Arrays;
  */
 final class Socks5Session {
   static final int VERSION = 5;
-  private static final int METHOD_NONE = 0x00;
-  private static final int METHOD_PASSWORD = 0x02;
+  static final int METHOD_NONE = 0x00;
+  static final int METHOD_PASSWORD = 0x02;
   private static final int METHOD_UNACCEPTABLE = 0xff;
-  private static final int CMD_CONNECT = 1;
+  static final int CMD_CONNECT = 1;
   private static final int CMD_UDP_ASSOCIATE = 3;
-  private static final int ATYP_IPV4 = 1;
-  private static final int ATYP_DOMAIN = 3;
-  private static final int ATYP_IPV6 = 4;
+  static final int ATYP_IPV4 = 1;
+  static final int ATYP_DOMAIN = 3;
+  static final int ATYP_IPV6 = 4;
 
   static final int REP_OK = 0;
   static final int REP_FAILURE = 1;
@@ -84,7 +84,13 @@ final class Socks5Session {
     int port = in.readUnsignedShort();
     switch (command) {
       case CMD_CONNECT -> connect(out, host, port);
-      case CMD_UDP_ASSOCIATE -> udpAssociate(in, out);
+      case CMD_UDP_ASSOCIATE -> {
+        if (dialer.hasUpstream()) {
+          reply(out, REP_COMMAND_NOT_SUPPORTED, null); // UDP would bypass the upstream
+        } else {
+          udpAssociate(in, out);
+        }
+      }
       default -> reply(out, REP_COMMAND_NOT_SUPPORTED, null);
     }
   }

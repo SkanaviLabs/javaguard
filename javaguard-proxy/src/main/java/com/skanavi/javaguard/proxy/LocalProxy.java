@@ -30,6 +30,10 @@ import javax.net.SocketFactory;
  * Builder#systemDnsFallback(boolean)} allows it. By default the proxy binds to loopback without
  * authentication; set {@link Builder#credentials(String, String)} before binding anywhere else.
  *
+ * <p>With {@link Builder#upstreamSocks5(String, int)}, TCP connections leave through a SOCKS5 proxy
+ * reached inside the tunnel. Target host names then go to that proxy unresolved, so it resolves
+ * them rather than the tunnel's DNS, and UDP ASSOCIATE is refused so that no traffic bypasses it.
+ *
  * <pre>{@code
  * LocalProxy proxy = LocalProxy.builder(netstack).build();   // 127.0.0.1, random port
  * HttpClient client = proxy.httpClientBuilder().build();
@@ -47,7 +51,7 @@ public final class LocalProxy implements Closeable {
   private volatile boolean closed;
 
   private LocalProxy(Builder b) throws IOException {
-    this.dialer = new Dialer(b.stack, b.systemDnsFallback, b.connectTimeout);
+    this.dialer = new Dialer(b.stack, b.systemDnsFallback, b.connectTimeout, b.upstream);
     this.credentials =
         b.user == null
             ? null
@@ -162,6 +166,7 @@ public final class LocalProxy implements Closeable {
     private boolean systemDnsFallback;
     private Duration connectTimeout = Duration.ofSeconds(10);
     private int maxConnections = 1024;
+    private Dialer.Upstream upstream;
 
     private Builder(Netstack stack) {
       this.stack = Objects.requireNonNull(stack);
@@ -182,14 +187,18 @@ public final class LocalProxy implements Closeable {
 
     /**
      * Whether names the tunnel's DNS cannot resolve may fall back to the host's resolver (default
-     * false, which keeps lookups from leaking outside the tunnel).
+     * false, which keeps lookups from leaking outside the tunnel). With an upstream, this applies
+     * only to the upstream's own host name.
      */
     public Builder systemDnsFallback(boolean allow) {
       this.systemDnsFallback = allow;
       return this;
     }
 
-    /** How long to wait for tunnel connections (default 10 s). */
+    /**
+     * How long to wait for tunnel connections (default 10 s), and with an upstream, for each of its
+     * handshake replies.
+     */
     public Builder connectTimeout(Duration timeout) {
       this.connectTimeout = timeout;
       return this;
@@ -199,6 +208,53 @@ public final class LocalProxy implements Closeable {
     public Builder maxConnections(int max) {
       this.maxConnections = max;
       return this;
+    }
+
+    /**
+     * Sends all TCP connections through the SOCKS5 proxy at {@code host:port}, which must be
+     * reachable inside the tunnel. {@code host} is resolved like any other tunnel name, and targets
+     * are not resolved at all. If the upstream fails, the connection fails: it is never dialed
+     * directly. UDP ASSOCIATE is refused.
+     *
+     * @throws IllegalArgumentException if {@code host} is empty or {@code port} is out of range
+     */
+    public Builder upstreamSocks5(String host, int port) {
+      return upstream(host, port, null);
+    }
+
+    /**
+     * Like {@link #upstreamSocks5(String, int)}, and authenticates to the upstream with a username
+     * and password. These are separate from {@link #credentials(String, String)}, which clients
+     * present to this proxy.
+     *
+     * @throws IllegalArgumentException if {@code host} is empty, {@code port} is out of range, or
+     *     {@code user} or {@code password} is not 1 to 255 bytes of UTF-8
+     */
+    public Builder upstreamSocks5(String host, int port, String user, String password) {
+      return upstream(
+          host,
+          port,
+          new Socks5Session.Credentials(
+              credentialBytes(user, "user"), credentialBytes(password, "password")));
+    }
+
+    private Builder upstream(String host, int port, Socks5Session.Credentials credentials) {
+      if (Objects.requireNonNull(host, "host").isEmpty()) {
+        throw new IllegalArgumentException("empty upstream host");
+      }
+      if (port < 1 || port > 65535) {
+        throw new IllegalArgumentException("upstream port out of range: " + port);
+      }
+      this.upstream = new Dialer.Upstream(host, port, credentials);
+      return this;
+    }
+
+    private static byte[] credentialBytes(String value, String name) {
+      byte[] bytes = Objects.requireNonNull(value, name).getBytes(StandardCharsets.UTF_8);
+      if (bytes.length < 1 || bytes.length > 255) {
+        throw new IllegalArgumentException("upstream " + name + " must be 1 to 255 bytes");
+      }
+      return bytes;
     }
 
     /** Binds and starts the proxy. */
