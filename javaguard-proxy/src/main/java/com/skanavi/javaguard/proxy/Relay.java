@@ -17,8 +17,12 @@ final class Relay {
 
   /** Relays until both directions finish; closes both sockets. Blocks the calling thread. */
   static void run(Socket client, TcpSocket remote) {
+    // A platform thread, so only the session's virtual thread ever parks on the client socket. On
+    // Windows, a virtual thread waiting to write missed its wakeup while another waited to read
+    // from the same socket, which stalled the relay for good under load.
     Thread upstream =
-        Thread.ofVirtual()
+        Thread.ofPlatform()
+            .daemon()
             .name("javaguard-proxy-up")
             .start(
                 () -> {

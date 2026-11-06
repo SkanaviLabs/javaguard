@@ -5,6 +5,8 @@ package com.skanavi.javaguard.proxy;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.skanavi.javaguard.netstack.TcpListener;
+import com.skanavi.javaguard.netstack.TcpSocket;
 import java.io.DataInputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -19,8 +21,15 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
+import java.util.List;
+import java.util.Random;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -96,6 +105,24 @@ class LocalProxyTest {
       s.getOutputStream().write(new byte[100_000]);
       s.shutdownOutput();
       assertThat(s.getInputStream().readAllBytes()).hasSize(100_000); // echo ends after our FIN
+    }
+  }
+
+  @Test
+  void socksCarriesBulkTransfersBothWays() throws Exception {
+    byte[] data = new byte[8 << 20];
+    new Random(1).nextBytes(data);
+    try (TcpListener far = site.stack.listenTcp(9);
+        ExecutorService sessions = Executors.newVirtualThreadPerTaskExecutor()) {
+      List<Future<byte[]>> echoed = new ArrayList<>();
+      for (int i = 0; i < 4; i++) {
+        Thread.ofVirtual().start(this::echoThroughProxy);
+        TcpSocket s = far.accept(Duration.ofSeconds(30));
+        echoed.add(sessions.submit(() -> sendAndReadBack(s, data)));
+      }
+      for (Future<byte[]> e : echoed) {
+        assertThat(e.get()).isEqualTo(data);
+      }
     }
   }
 
@@ -288,6 +315,41 @@ class LocalProxyTest {
     out.flush();
     byte[] got = s.getInputStream().readNBytes(text.length());
     return new String(got);
+  }
+
+  /**
+   * Echoes on one thread, so a full send buffer stops it reading: the proxy then has to write to
+   * this socket and read from it with both directions backed up.
+   */
+  private void echoThroughProxy() {
+    try (Socket s = new Socket(proxy.socksProxy())) {
+      s.connect(new InetSocketAddress(InetAddress.ofLiteral("10.0.0.2"), 9));
+      s.getInputStream().transferTo(s.getOutputStream());
+      s.shutdownOutput();
+    } catch (IOException e) {
+      // the far side's read reports the failure
+    }
+  }
+
+  /** Sends {@code data} while reading it back. A stalled proxy ends in the read timeout. */
+  private static byte[] sendAndReadBack(TcpSocket s, byte[] data) throws Exception {
+    try (s) {
+      s.readTimeout(Duration.ofSeconds(30));
+      Thread writer =
+          Thread.ofVirtual()
+              .start(
+                  () -> {
+                    try {
+                      s.outputStream().write(data);
+                      s.shutdownOutput();
+                    } catch (IOException e) {
+                      s.abort();
+                    }
+                  });
+      byte[] got = s.inputStream().readAllBytes();
+      writer.join();
+      return got;
+    }
   }
 
   private static String readLine(InputStream in) throws IOException {

@@ -21,6 +21,8 @@
 
 - A `Netstack` listener accepts a new connection that reuses the address pair of one in TIME_WAIT.
   The SYN used to get a bare ACK, so the connect stalled until it timed out.
+- `LocalProxy` no longer stalls for good on Windows when a connection is busy in both directions.
+  Each relayed connection now uses one platform thread.
 
 ## 1.0.0 (2026-11-03)
 
