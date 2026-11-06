@@ -78,6 +78,7 @@ final class TcpConnection {
   // Send side.
   private final ByteRing sendBuffer = new ByteRing(BUFFER_SIZE);
   private final int iss;
+  private int irs;
   private int sndUna;
   private int sndNxt;
   private int sndMax; // highest sequence number sent so far; sndNxt rewinds below it on timeout
@@ -142,6 +143,7 @@ final class TcpConnection {
     TcpConnection c = new TcpConnection(stack, key, listener, State.SYN_RECEIVED);
     c.lock.lock();
     try {
+      c.irs = syn.seq();
       c.rcvNxt = syn.seq() + 1;
       c.sndWnd = syn.window();
       c.negotiate(syn);
@@ -446,6 +448,32 @@ final class TcpConnection {
     }
   }
 
+  /**
+   * Closes this connection if {@code seg} opens a new one on the same address pair, so a listener
+   * can accept it. Source ports repeat, and TIME_WAIT would otherwise answer the SYN with a bare
+   * ACK until the peer gives up.
+   *
+   * <p>RFC 1122 4.2.2.13 only allows this for a sequence number above the old connection's, which
+   * random initial sequence numbers satisfy half the time. This refuses only numbers the old
+   * connection already used: those are the ones an old duplicate SYN can carry.
+   *
+   * @return whether the connection closed
+   */
+  boolean yieldToNewConnection(TcpSegment seg) {
+    lock.lock();
+    try {
+      boolean newSyn = seg.has(SYN) && !seg.has(ACK) && !seg.has(RST);
+      boolean oldSequence = le(irs, seg.seq()) && lt(seg.seq(), rcvNxt);
+      if (state != State.TIME_WAIT || !newSyn || oldSequence) {
+        return false;
+      }
+      enterClosed(null);
+      return true;
+    } finally {
+      lock.unlock();
+    }
+  }
+
   private void synSent(TcpSegment seg) {
     if (seg.has(ACK) && (le(seg.ack(), iss) || lt(sndNxt, seg.ack()))) {
       if (!seg.has(RST)) {
@@ -462,6 +490,7 @@ final class TcpConnection {
     if (!seg.has(SYN)) {
       return;
     }
+    irs = seg.seq();
     rcvNxt = seg.seq() + 1;
     negotiate(seg);
     if (seg.has(ACK)) {
