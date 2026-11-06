@@ -179,28 +179,6 @@ class TunnelHostTest {
             });
     host.expose(PORT, Target.loopback(server.getLocalPort()));
 
-    Thread.ofPlatform()
-        .daemon()
-        .start(
-            () -> {
-              try {
-                Thread.sleep(30_000);
-                Path out = Files.createTempDirectory("dump").resolve("threads.txt");
-                java.lang.management.ManagementFactory.getPlatformMXBean(
-                        com.sun.management.HotSpotDiagnosticMXBean.class)
-                    .dumpThreads(
-                        out.toString(),
-                        com.sun.management.HotSpotDiagnosticMXBean.ThreadDumpFormat.TEXT_PLAIN);
-                System.out.println("=====DUMP=====");
-                System.out.println(Files.readString(out));
-                System.out.println("rx=" + host.device().peer(alice.publicKey()).rxBytes());
-                System.out.println("tx=" + host.device().peer(alice.publicKey()).txBytes());
-                System.out.println("dropped=" + host.stack().droppedPackets());
-                System.out.println("=====END=====");
-              } catch (Exception e) {
-                e.printStackTrace(System.out);
-              }
-            });
     byte[] data = new byte[8 << 20];
     new Random(1).nextBytes(data);
     try (TcpSocket s = alice.connect(PORT, LONG)) {
