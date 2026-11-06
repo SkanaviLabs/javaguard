@@ -15,6 +15,8 @@ open public issues for security problems.
 | **Network** (anyone who can send UDP to the listen port) | `Device` receive path, handshake processing, cookie logic | read or forge tunnel traffic; exhaust memory or CPU beyond bounded work per packet |
 | **Authenticated peer** (holds a configured key) | everything above, plus the netstack (IP, ICMP, UDP, TCP, DNS replies) | send traffic from IPs outside its allowed IPs; exhaust memory beyond per-connection bounds; affect other peers' sessions |
 | **Local host user** (other OS accounts) | the proxy port, if bound beyond loopback, and the UAPI socket path | read the private key (the UAPI socket is owner-only); use the proxy without credentials when it is exposed |
+| **Authenticated peer, `TunnelHost`** | the ports it serves or exposes, and through them the local services behind `expose` | reach other peers or any host beyond this one; pose as another peer; hold more than its connection limit |
+| **Local host user, `TunnelHost`** | a loopback `expose` target, like any local port | reach a Unix socket target the file permissions deny; forge a PROXY header on one |
 | **Authenticated peer, `--tun` mode** | the host's own network stack through the interface, for its allowed IPs | reach the host from addresses outside its allowed IPs; anything the host's firewall would block on another interface |
 
 Out of scope: side channels below the JVM (cache timing, power), a compromised JVM or host, and
@@ -49,6 +51,7 @@ the application's own process memory.
 | Netstack inbound/outbound queues | 4096 packets |
 | UDP socket receive queue | 256 datagrams |
 | TCP half-open per listener / accept backlog | 256 / configurable, default 128 |
+| Inbound TCP connections | unlimited on a plain `Netstack`; `TunnelHost` allows 64 per peer and 1024 in all, both configurable, counted until close or TIME_WAIT |
 | TCP per connection | 256 KiB send + 256 KiB receive buffers, out-of-order queue within the window and at most 512 segments |
 | Proxy sessions | 1024 concurrent; HTTP request head 64 KiB |
 | DNS / UAPI parsing | name compression loops capped; UAPI 100k lines of at most 64 KiB |
@@ -96,6 +99,17 @@ during Phase 8 with no findings:
 - TCP buffers are allocated up front: about 512 KiB per connection, including half-open ones. An
   authenticated peer can make the netstack hold up to 256 half-open connections per listener
   (about 128 MiB).
+- On a plain `Netstack` nothing limits accepted connections; set `tcpMaxInbound` and
+  `tcpMaxInboundPerRemote` when accepting from peers that are not trusted. `TunnelHost` sets both.
+- The `TunnelHost` limits are per address and shared overall: enough peers acting together can use
+  up the total, about 16 at the defaults. TIME_WAIT entries are not counted. They hold no buffers
+  but remain for 60 s, so a peer closing connections quickly still costs a small amount of memory
+  per connection, without a bound.
+- `TunnelHost.expose` with `ProxyHeader.NONE` makes every peer look local to the service, which
+  defeats any trust the service places in local clients. A PROXY header on a loopback target can be
+  forged by any local process; use a Unix socket with restrictive permissions.
+- Changes made directly through `TunnelHost.device()` skip its address checks. Connections are still
+  reset when their address changes hands.
 - `java.net.http.HttpClient` refuses Basic proxy auth for HTTPS tunnels unless the JDK property
   `jdk.http.auth.tunneling.disabledSchemes` is relaxed.
 - No OS-level isolation. javaguard runs in the application's JVM and shares its fate.

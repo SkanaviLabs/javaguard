@@ -5,7 +5,7 @@ package com.skanavi.javaguard.netstack;
 
 /** A fixed-capacity FIFO byte buffer with random-access reads from the head. Not thread-safe. */
 final class ByteRing {
-  private final byte[] buf;
+  private byte[] buf;
   private int head;
   private int size;
 
@@ -15,6 +15,15 @@ final class ByteRing {
 
   int capacity() {
     return buf.length;
+  }
+
+  /** Gives up the storage of an empty ring that will hold no more data. */
+  void release() {
+    if (size != 0) {
+      throw new IllegalStateException("ring is not empty");
+    }
+    buf = new byte[1]; // not empty: the index arithmetic divides by the length
+    head = 0;
   }
 
   int size() {

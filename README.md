@@ -26,6 +26,7 @@ javaguard is protocol-compatible with peers running the Linux kernel WireGuard m
 - [Quick start: embedded](#quick-start-embedded)
 - [Quick start: CLI](#quick-start-cli)
   - [A real interface (Linux)](#a-real-interface-linux)
+- [Serving peers](#serving-peers)
 - [Design notes](#design-notes)
 - [Building](#building)
 - [Testing](#testing)
@@ -64,6 +65,7 @@ suites, that scoping is the point; a process-wide tunnel would be a bug.
 | `javaguard-netstack` | `Netstack`: userspace IPv4/IPv6, ICMP, UDP sockets, TCP, DNS resolver |
 | `javaguard-proxy` | `LocalProxy`: SOCKS5 and HTTP proxy into the tunnel, plus `ProxySelector`/`SocketFactory`/`HttpClient` helpers |
 | `javaguard-config` | wg-quick file parser/formatter; UAPI server so the stock `wg` tool can manage a device |
+| `javaguard-server` | `TunnelHost`: a WireGuard server inside the JVM. Peers reach only the services you expose, with no forwarding |
 | `javaguard-tun` | Optional, Linux: `LinuxTun`, a kernel TUN interface as the device's tun, and `HostNetwork` for addresses, routes, DNS and hooks. Uses FFM |
 | `javaguard-cli` | `javaguard genkey`, `pubkey`, `genpsk`, `up <file.conf> [--proxy port]` |
 
@@ -177,6 +179,70 @@ LinuxTun tun = LinuxTun.open("wg0", 1420);
 Device device = Device.builder().privateKey(key).bind(UdpBind.open(0)).tun(tun).build();
 ```
 
+## Serving peers
+
+`TunnelHost` makes the JVM a WireGuard server. Any WireGuard client can connect, including Linux
+`wg-quick`, but it reaches only the ports opened here. The network stack ends traffic rather than
+routing it, so peers cannot reach each other, the host's network or the Internet.
+
+```ini
+[Interface]
+PrivateKey = <base64>
+ListenPort = 51820
+Address = 10.0.0.1/24
+
+[Peer]
+PublicKey = <base64>
+AllowedIPs = 10.0.0.2/32
+```
+
+```java
+try (TunnelHost host = TunnelHost.start(Path.of("server.conf"))) {
+    host.serveTcp(7000, c -> handle(c.peer(), c.socket()));          // your own code
+    host.expose(443, Target.unixSocket(Path.of("/run/app/web.sock")), ProxyHeader.V2);
+    host.expose(9000, Target.loopback(9000));                        // TCP-only services
+    host.awaitClose();
+}
+```
+
+Every peer must have its own `/32` or `/128` addresses, which makes the address an authenticated
+identity. Each peer may hold 64 connections and all peers together 1024; change this on
+`TunnelHost.builder()`. A connection is reset as soon as its address stops belonging to the peer
+that opened it, for example when the peer is removed.
+
+An existing server keeps its own listener and `expose` relays to it. There is no target for another
+host. Without a header, the service sees every peer as a local client, so anything that trusts
+localhost trusts every peer. Use a Unix socket and `ProxyHeader.V2` where the service supports them:
+the header carries the peer's tunnel address and, in TLV `0xE0`, its public key, and file
+permissions keep other local users from connecting or forging it. Jetty 12 needs these lines, and
+any other connector on a public port should go:
+
+```java
+var connector = new UnixDomainServerConnector(server,
+    new ProxyConnectionFactory(HttpVersion.HTTP_1_1.asString()), new HttpConnectionFactory());
+connector.setUnixDomainPath(Path.of("/run/app/web.sock"));
+server.addConnector(connector);
+```
+
+`Request.getRemoteAddr` then returns the peer's tunnel address, and
+`ProxyConnectionFactory.ProxyEndPoint.getTLV(ProxyHeader.PEER_KEY_TLV)` its key.
+
+A Linux client should route only the server's address, and set no `DNS`, because `TunnelHost` serves
+none. With `AllowedIPs = 0.0.0.0/0` the client would send all of its traffic to a server that drops
+it:
+
+```ini
+[Interface]
+PrivateKey = <base64>
+Address = 10.0.0.2/32
+
+[Peer]
+PublicKey = <base64>
+Endpoint = server.example.com:51820
+AllowedIPs = 10.0.0.1/32
+PersistentKeepalive = 25
+```
+
 ## Design notes
 
 - **Threads:** each device has a UDP receive thread, a tun thread, a handshake worker, a timer
@@ -203,7 +269,7 @@ virtual time). Gradle downloads a JDK 25 toolchain if needed.
 | Command | What it runs |
 |---|---|
 | `./gradlew test` | Unit, property and simulation tests |
-| `./gradlew interopTest` | Docker. Kernel WireGuard and `wireguard-go` in both roles; ping, UDP, DNS, TCP (with 1% loss), the `wg` tool against `javaguard up`, and `HttpClient`/`curl` through the proxy. Add `-PlongInterop=true` for a 260 s run across rekeys |
+| `./gradlew interopTest` | Docker. Kernel WireGuard and `wireguard-go` in both roles; ping, UDP, DNS, TCP (with 1% loss), the `wg` tool against `javaguard up`, `HttpClient`/`curl` through the proxy, and Jetty behind `TunnelHost`. Add `-PlongInterop=true` for a 260 s run across rekeys |
 | `./gradlew fuzz` | Jazzer, 60 s per target |
 | `./gradlew :javaguard-netstack:soakTest -PsoakMinutes=N` | Long stability run with leak checks |
 | `./gradlew :javaguard-proxy:remoteTest -PremoteEndpoint=… -PremotePublicKey=… -PremoteKeyFile=…` | Against a real peer over the Internet; see `scripts/remote-peer/` |

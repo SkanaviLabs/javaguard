@@ -24,6 +24,7 @@ import com.skanavi.javaguard.crypto.PrivateKey;
 import com.skanavi.javaguard.crypto.PublicKey;
 import java.io.Closeable;
 import java.io.IOException;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.nio.channels.ClosedChannelException;
 import java.security.InvalidKeyException;
@@ -33,8 +34,10 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -86,6 +89,7 @@ public final class Device implements Closeable {
 
   final IndexTable indices = new IndexTable();
   final AllowedIps<Peer> allowedIps = new AllowedIps<>();
+  private final List<Runnable> routeListeners = new CopyOnWriteArrayList<>();
   private final ConcurrentHashMap<PublicKey, Peer> peers = new ConcurrentHashMap<>();
   private final RateLimiter rateLimiter;
 
@@ -259,6 +263,7 @@ public final class Device implements Closeable {
     if (up && !config.persistentKeepalive().isZero()) {
       peer.sendKeepalive(); // outside the identity lock (see Peer lock order)
     }
+    routesChanged();
     return peer;
   }
 
@@ -270,7 +275,33 @@ public final class Device implements Closeable {
     }
     allowedIps.removeAll(peer);
     peer.stop();
+    routesChanged();
     return true;
+  }
+
+  /** The peer that {@code address} is routed to, which is the one allowed to send from it. */
+  public Optional<Peer> peerFor(InetAddress address) {
+    byte[] bytes = address.getAddress();
+    return Optional.ofNullable(allowedIps.lookup(bytes, 0, bytes.length));
+  }
+
+  /**
+   * Calls {@code listener} after a peer is added or removed or its allowed IPs change, however the
+   * change was made, including through UAPI. It runs on the thread making the change, so it must be
+   * quick; use {@link #peerFor(InetAddress)} to see the result.
+   */
+  public void onRoutesChanged(Runnable listener) {
+    routeListeners.add(Objects.requireNonNull(listener, "listener"));
+  }
+
+  void routesChanged() {
+    for (Runnable listener : routeListeners) {
+      try {
+        listener.run();
+      } catch (RuntimeException e) {
+        LOG.log(System.Logger.Level.WARNING, "route listener failed", e);
+      }
+    }
   }
 
   /** The peer with {@code publicKey}, or {@code null}. */

@@ -16,7 +16,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 /**
  * A listening TCP port on a {@link Netstack}, on all of its addresses. Up to 256 handshakes may be
  * in progress and up to {@code backlog} established connections may wait for {@link #accept()};
- * further SYNs are dropped. Thread-safe.
+ * further SYNs are dropped, as are SYNs over the {@link Netstack.Builder#tcpMaxInbound(int)} and
+ * {@link Netstack.Builder#tcpMaxInboundPerRemote(int)} limits. Thread-safe.
  */
 public final class TcpListener implements Closeable {
   private static final int MAX_HALF_OPEN = 256;
@@ -70,7 +71,10 @@ public final class TcpListener implements Closeable {
 
   /** Handles a SYN for this port with no existing connection. */
   void onSyn(InetAddress local, InetAddress remote, TcpSegment syn) {
-    if (closed || backlog.remainingCapacity() <= 1 || halfOpen.get() >= MAX_HALF_OPEN) {
+    if (closed
+        || backlog.remainingCapacity() <= 1
+        || halfOpen.get() >= MAX_HALF_OPEN
+        || !stack.reserveInbound(remote)) {
       return;
     }
     TcpKey key = new TcpKey(local, port, remote, syn.srcPort());

@@ -7,6 +7,7 @@ javaguard publishes seven artifacts under `com.skanavi.javaguard` through the
 - `javaguard-core`
 - `javaguard-netstack`
 - `javaguard-config`
+- `javaguard-server`
 - `javaguard-proxy`
 - `javaguard-tun`
 - `javaguard-cli`
