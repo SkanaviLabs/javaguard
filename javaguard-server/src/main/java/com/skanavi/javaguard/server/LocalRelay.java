@@ -37,8 +37,14 @@ final class LocalRelay implements ConnectionHandler {
                 ProxyProtocolV2.encode(
                     socket.remoteAddress(), socket.localAddress(), connection.peer())));
       }
+      // A platform thread, so only this virtual thread ever parks on the channel. On Windows, a
+      // virtual thread waiting to write missed its wakeup while another waited to read from the
+      // same socket, which stalled the relay for good under load.
       Thread upstream =
-          Thread.ofVirtual().name("javaguard-relay-up").start(() -> toLocal(socket, local));
+          Thread.ofPlatform()
+              .daemon()
+              .name("javaguard-relay-up")
+              .start(() -> toLocal(socket, local));
       ByteBuffer buf = ByteBuffer.allocate(BUFFER);
       while (local.read(buf) >= 0) {
         socket.outputStream().write(buf.array(), 0, buf.position());
