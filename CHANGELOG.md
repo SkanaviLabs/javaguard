@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+### In progress
+
+- A route-capable server: forwarding for peers to the host network or between peers, IPv4/IPv6
+  route advertisement, ACL/NAT and DNS design. This is not part of 1.0.0 or 1.1.0; the 1.1.0
+  `TunnelHost` remains a service-level endpoint with no forwarding beyond the host.
+
+## 1.1.0 (2026-11-07)
+
+### Added
+
+- `javaguard-server`: `TunnelHost`, a WireGuard server inside a JVM. Peers reach only the ports it
+  opens, through `serveTcp` handlers that learn the peer's public key, or `expose`, which relays a
+  tunnel port to a local TCP port or Unix socket, optionally with a PROXY protocol v2 header. There
+  is no forwarding beyond this host, and each peer must have addresses of its own.
+- `Device.peerFor` finds the peer an address belongs to, and `Device.onRoutesChanged` reports
+  changes to peers and allowed IPs, including those made through UAPI.
+- `Netstack.Builder.tcpMaxInbound` and `tcpMaxInboundPerRemote` limit inbound TCP connections, and
+  `Netstack.refusedTcpConnections` counts those refused. Both limits are off by default.
+- `LocalProxy.Builder.upstreamSocks5` sends TCP from both the SOCKS5 and HTTP sides through a SOCKS5
+  proxy reached inside the tunnel, with optional username/password authentication. Target host
+  names go to the upstream unresolved, UDP ASSOCIATE is refused, and a failed upstream fails the
+  connection rather than dialing the target directly.
+
+### Changed
+
+- A TCP connection entering TIME_WAIT frees its buffers if they are empty.
+
 ### Fixed
 
 - A `Netstack` listener accepts a new connection that reuses the address pair of one in TIME_WAIT.

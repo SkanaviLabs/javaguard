@@ -4,7 +4,7 @@
 import java.util.zip.ZipFile
 
 val staging = layout.buildDirectory.dir("staging-deploy")
-val published = listOf("javaguard-crypto", "javaguard-core", "javaguard-netstack", "javaguard-config", "javaguard-proxy", "javaguard-tun", "javaguard-cli")
+val published = listOf("javaguard-crypto", "javaguard-core", "javaguard-netstack", "javaguard-config", "javaguard-server", "javaguard-proxy", "javaguard-tun", "javaguard-cli")
 
 // Staging starts empty on every publish, so files from an earlier run can never reach a bundle.
 tasks.register<Delete>("cleanStaging") {

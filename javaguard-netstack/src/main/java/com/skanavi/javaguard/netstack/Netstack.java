@@ -68,6 +68,12 @@ public final class Netstack implements Tun {
   private final long minRtoNanos;
   private final long timeWaitNanos;
   private final boolean tcpSack;
+  private final int tcpMaxInbound;
+  private final int tcpMaxInboundPerRemote;
+  private final AtomicInteger inboundTcp = new AtomicInteger();
+  private final ConcurrentHashMap<InetAddress, Integer> inboundTcpByRemote =
+      new ConcurrentHashMap<>();
+  private final AtomicLong refusedTcp = new AtomicLong();
   private final BlockingQueue<byte[]> inbound;
   private final Thread inboundThread;
   private volatile boolean closed;
@@ -100,6 +106,8 @@ public final class Netstack implements Tun {
     this.minRtoNanos = b.minRto.toNanos();
     this.timeWaitNanos = b.timeWait.toNanos();
     this.tcpSack = b.tcpSack;
+    this.tcpMaxInbound = b.tcpMaxInbound;
+    this.tcpMaxInboundPerRemote = b.tcpMaxInboundPerRemote;
     // Inbound packets are processed on their own thread, so the device's receive thread can go
     // back to decrypting while TCP processing runs on another core.
     this.inbound = new ArrayBlockingQueue<>(b.queueCapacity + 1);
@@ -126,6 +134,11 @@ public final class Netstack implements Tun {
   /** Packets dropped because the inbound or outbound queue was full. */
   public long droppedPackets() {
     return dropped.get();
+  }
+
+  /** Inbound TCP connections refused by the limits on the {@link Builder}. */
+  public long refusedTcpConnections() {
+    return refusedTcp.get();
   }
 
   // ---------------------------------------------------------------- application API
@@ -519,6 +532,36 @@ public final class Netstack implements Tun {
     tcp.remove(key, c);
   }
 
+  /** Takes a slot for an inbound connection from {@code remote}; false if over a limit. */
+  boolean reserveInbound(InetAddress remote) {
+    if (inboundTcp.incrementAndGet() > tcpMaxInbound) {
+      inboundTcp.decrementAndGet();
+      refusedTcp.incrementAndGet();
+      return false;
+    }
+    boolean[] reserved = new boolean[1];
+    inboundTcpByRemote.compute(
+        remote,
+        (k, count) -> {
+          int n = count == null ? 0 : count;
+          if (n >= tcpMaxInboundPerRemote) {
+            return count;
+          }
+          reserved[0] = true;
+          return n + 1;
+        });
+    if (!reserved[0]) {
+      inboundTcp.decrementAndGet();
+      refusedTcp.incrementAndGet();
+    }
+    return reserved[0];
+  }
+
+  void releaseInbound(InetAddress remote) {
+    inboundTcp.decrementAndGet();
+    inboundTcpByRemote.computeIfPresent(remote, (k, count) -> count == 1 ? null : count - 1);
+  }
+
   void removeListener(int port, TcpListener l) {
     listeners.remove(port, l);
   }
@@ -634,6 +677,8 @@ public final class Netstack implements Tun {
     private Duration minRto = Duration.ofMillis(200);
     private Duration timeWait = Duration.ofSeconds(60);
     private boolean tcpSack = true;
+    private int tcpMaxInbound = Integer.MAX_VALUE;
+    private int tcpMaxInboundPerRemote = Integer.MAX_VALUE;
 
     private Builder() {}
 
@@ -709,6 +754,31 @@ public final class Netstack implements Tun {
     /** Whether TCP offers and uses SACK (default true); off falls back to NewReno recovery. */
     public Builder tcpSack(boolean enabled) {
       this.tcpSack = enabled;
+      return this;
+    }
+
+    /**
+     * Limits inbound TCP connections across all listeners (default unlimited). Each holds about 512
+     * KiB from its first SYN until it closes or enters TIME_WAIT; further SYNs are dropped.
+     */
+    public Builder tcpMaxInbound(int max) {
+      if (max < 1) {
+        throw new IllegalArgumentException("limit must be positive: " + max);
+      }
+      this.tcpMaxInbound = max;
+      return this;
+    }
+
+    /**
+     * Limits inbound TCP connections from any one remote address (default unlimited), counted as
+     * for {@link #tcpMaxInbound(int)}. With a peer per address, this stops one peer from using up
+     * the half-open slots of a listener.
+     */
+    public Builder tcpMaxInboundPerRemote(int max) {
+      if (max < 1) {
+        throw new IllegalArgumentException("limit must be positive: " + max);
+      }
+      this.tcpMaxInboundPerRemote = max;
       return this;
     }
 

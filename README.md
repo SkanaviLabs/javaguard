@@ -26,6 +26,7 @@ javaguard is protocol-compatible with peers running the Linux kernel WireGuard m
 - [Quick start: embedded](#quick-start-embedded)
 - [Quick start: CLI](#quick-start-cli)
   - [A real interface (Linux)](#a-real-interface-linux)
+- [Serving peers](#serving-peers)
 - [Design notes](#design-notes)
 - [Building](#building)
 - [Testing](#testing)
@@ -64,16 +65,18 @@ suites, that scoping is the point; a process-wide tunnel would be a bug.
 | `javaguard-netstack` | `Netstack`: userspace IPv4/IPv6, ICMP, UDP sockets, TCP, DNS resolver |
 | `javaguard-proxy` | `LocalProxy`: SOCKS5 and HTTP proxy into the tunnel, plus `ProxySelector`/`SocketFactory`/`HttpClient` helpers |
 | `javaguard-config` | wg-quick file parser/formatter; UAPI server so the stock `wg` tool can manage a device |
+| `javaguard-server` | `TunnelHost`: a WireGuard server inside the JVM. Peers reach only the services you expose, with no forwarding |
 | `javaguard-tun` | Optional, Linux: `LinuxTun`, a kernel TUN interface as the device's tun, and `HostNetwork` for addresses, routes, DNS and hooks. Uses FFM |
 | `javaguard-cli` | `javaguard genkey`, `pubkey`, `genpsk`, `up <file.conf> [--proxy port]` |
 
 Most applications depend on `javaguard-proxy` and `javaguard-config`; together they pull in
-`javaguard-netstack`, `javaguard-core` and `javaguard-crypto`.
+`javaguard-netstack`, `javaguard-core` and `javaguard-crypto`. Add `javaguard-server` when the JVM
+should also accept WireGuard peers.
 
 ```kotlin
 dependencies {
-    implementation("com.skanavi.javaguard:javaguard-proxy:1.0.0")
-    implementation("com.skanavi.javaguard:javaguard-config:1.0.0")
+    implementation("com.skanavi.javaguard:javaguard-proxy:1.1.0")
+    implementation("com.skanavi.javaguard:javaguard-config:1.1.0")
 }
 ```
 
@@ -121,6 +124,19 @@ LocalProxy proxy = LocalProxy.builder(stack).build();          // 127.0.0.1, ran
 HttpClient http = proxy.httpClientBuilder().build();           // java.net.http
 Socket socket = proxy.socketFactory().createSocket("db.internal", 5432);
 ```
+
+Since 1.1.0, to leave through a SOCKS5 proxy inside the tunnel, such as a VPN provider's proxy on
+another relay, set an upstream. Clients of both the SOCKS5 and HTTP sides work unchanged:
+
+```java
+LocalProxy proxy = LocalProxy.builder(stack)
+    .upstreamSocks5("10.64.0.1", 1080)                         // or add a user and password
+    .build();
+```
+
+Target host names then go to the upstream unresolved, so it resolves them rather than the tunnel's
+DNS. UDP ASSOCIATE is refused, and if the upstream fails the connection fails, so traffic never
+leaves by another route.
 
 Without a network stack, pass a `PacketPipe` as the tun and exchange raw IP packets with
 `send`/`receive`.
@@ -177,6 +193,77 @@ LinuxTun tun = LinuxTun.open("wg0", 1420);
 Device device = Device.builder().privateKey(key).bind(UdpBind.open(0)).tun(tun).build();
 ```
 
+## Serving peers
+
+`TunnelHost` (1.1.0) makes the JVM a WireGuard server. Any WireGuard client can connect, including Linux
+`wg-quick`, but it reaches only the ports opened here. The network stack ends traffic rather than
+routing it, so peers cannot reach each other, the host's network or the Internet.
+
+```ini
+[Interface]
+PrivateKey = <base64>
+ListenPort = 51820
+Address = 10.0.0.1/24
+
+[Peer]
+PublicKey = <base64>
+AllowedIPs = 10.0.0.2/32
+```
+
+```java
+try (TunnelHost host = TunnelHost.start(Path.of("server.conf"))) {
+    host.serveTcp(7000, c -> handle(c.peer(), c.socket()));          // your own code
+    host.expose(443, Target.unixSocket(Path.of("/run/app/web.sock")), ProxyHeader.V2);
+    host.expose(9000, Target.loopback(9000));                        // TCP-only services
+    host.awaitClose();
+}
+```
+
+Every peer must have its own `/32` or `/128` addresses, which makes the address an authenticated
+identity. Each peer may hold 64 connections and all peers together 1024; change this on
+`TunnelHost.builder()`. A connection is reset as soon as its address stops belonging to the peer
+that opened it, for example when the peer is removed.
+
+An existing server keeps its own listener and `expose` relays to it. There is no target for another
+host. Without a header, the service sees every peer as a local client, so anything that trusts
+localhost trusts every peer. Use a Unix socket and `ProxyHeader.V2` where the service supports them:
+the header carries the peer's tunnel address and, in TLV `0xE0`, its public key, and file
+permissions keep other local users from connecting or forging it. Jetty 12 needs these lines, and
+any other connector on a public port should go:
+
+```java
+var connector = new UnixDomainServerConnector(server,
+    new ProxyConnectionFactory(HttpVersion.HTTP_1_1.asString()), new HttpConnectionFactory());
+connector.setUnixDomainPath(Path.of("/run/app/web.sock"));
+server.addConnector(connector);
+```
+
+`Request.getRemoteAddr` then returns the peer's tunnel address, and
+`ProxyConnectionFactory.ProxyEndPoint.getTLV(ProxyHeader.PEER_KEY_TLV)` its key.
+
+A Linux client should route only the server's address, and set no `DNS`, because `TunnelHost` serves
+none. With `AllowedIPs = 0.0.0.0/0` the client would send all of its traffic to a server that drops
+it:
+
+```ini
+[Interface]
+PrivateKey = <base64>
+Address = 10.0.0.2/32
+
+[Peer]
+PublicKey = <base64>
+Endpoint = server.example.com:51820
+AllowedIPs = 10.0.0.1/32
+PersistentKeepalive = 25
+```
+
+### Roadmap: route-capable server
+
+The next server step is a route-capable variant that forwards for its peers and to the host network,
+with IPv4/IPv6 route advertisement, ACLs, NAT and DNS. It is in preparation and is not part of 1.1.0.
+Until it ships, `TunnelHost` remains a service-level endpoint: it terminates traffic at this JVM and
+does not forward beyond the host, between peers, or to the Internet.
+
 ## Design notes
 
 - **Threads:** each device has a UDP receive thread, a tun thread, a handshake worker, a timer
@@ -203,7 +290,7 @@ virtual time). Gradle downloads a JDK 25 toolchain if needed.
 | Command | What it runs |
 |---|---|
 | `./gradlew test` | Unit, property and simulation tests |
-| `./gradlew interopTest` | Docker. Kernel WireGuard and `wireguard-go` in both roles; ping, UDP, DNS, TCP (with 1% loss), the `wg` tool against `javaguard up`, and `HttpClient`/`curl` through the proxy. Add `-PlongInterop=true` for a 260 s run across rekeys |
+| `./gradlew interopTest` | Docker. Kernel WireGuard and `wireguard-go` in both roles; ping, UDP, DNS, TCP (with 1% loss), the `wg` tool against `javaguard up`, `HttpClient`/`curl` through the proxy, and Jetty behind `TunnelHost`. Add `-PlongInterop=true` for a 260 s run across rekeys |
 | `./gradlew fuzz` | Jazzer, 60 s per target |
 | `./gradlew :javaguard-netstack:soakTest -PsoakMinutes=N` | Long stability run with leak checks |
 | `./gradlew :javaguard-proxy:remoteTest -PremoteEndpoint=… -PremotePublicKey=… -PremoteKeyFile=…` | Against a real peer over the Internet; see `scripts/remote-peer/` |
@@ -220,18 +307,18 @@ Snapshot: chop0/wireguard-java at `495da11` (October 2023), WireGuard/wireguard-
 
 | | **javaguard** | **[chop0/wireguard-java](https://github.com/chop0/wireguard-java)** | **[WireGuard/wireguard-android](https://github.com/WireGuard/wireguard-android)** | **[wgtunnel/android](https://github.com/wgtunnel/android)** + **[core](https://github.com/wgtunnel/core)** |
 |---|---|---|---|---|
-| Type | JVM library and CLI | JVM library and CLI | Official Android app plus `tunnel` library | Android app; core library for Android and JVM/desktop |
+| Type | JVM library and CLI; client and server | JVM library and CLI | Official Android app plus `tunnel` library | Android app; core library for Android and JVM/desktop |
 | Protocol engine | Java | Java | Go (`wireguard-go`) or the kernel module | Go (`amneziawg-go`) via JNI |
 | Runtime | Java 25+, any OS with a JVM | Java 21 with preview features, Linux and macOS | Android 8.0+ | Android 8.0+; core also JDK 21 desktop |
 | Privileges | None; `CAP_NET_ADMIN` only for `--tun` | Root (TUN and interface setup) | None; root optional for the kernel backend | None on Android; root/admin on desktop |
-| Tunnel model | In-process; optional Linux TUN | Host-wide TUN | Android `VpnService` | Android `VpnService`; host TUN on desktop |
+| Tunnel model | In-process client and server; optional Linux TUN | Host-wide TUN | Android `VpnService` | Android `VpnService`; host TUN on desktop |
 | TCP/IP stack | Userspace, in Java | Host kernel | Android OS stack | Android OS stack; gVisor in proxy mode |
-| Proxy | SOCKS5 and HTTP | — | — | SOCKS5 and HTTP |
+| Proxy | SOCKS5 and HTTP, optionally through an upstream SOCKS5 | — | — | SOCKS5 and HTTP |
 | Config | wg-quick, UAPI, stock `wg` | A subset of wg-quick | wg-quick in the app | wg-quick, AmneziaWG, UAPI |
 | Native code | None in the core; FFM for Linux TUN | JNI for TUN, ChaCha20 and Poly1305 | `libwg-go.so` via the NDK | Go and C JNI via the NDK |
 | Distribution | Maven Central modules | Source and native-image build | Play Store and Maven Central | Play, F-Droid; Maven Central for core |
 | License | MIT | No license file | Apache-2.0 | MIT |
-| Status | 1.0.0, November 2026 | No releases; last commit October 2023 | Actively maintained | 5.8.2 app, 1.9.10 core, October 2026 |
+| Status | 1.1.0, November 2026 | No releases; last commit October 2023 | Actively maintained | 5.8.2 app, 1.9.10 core, October 2026 |
 
 **chop0/wireguard-java.** It implements WireGuard in Java, but relies on a TUN device and the OS
 TCP/IP stack. Root is required, and there is no userspace netstack, proxy, UAPI, keygen or published
@@ -258,9 +345,9 @@ proxy mode and desktop TUN support, but still needs JDK 21, a Go/C toolchain, na
 root or administrator rights for desktop VPN mode. javaguard is pure Java with a Java userspace stack;
 wgtunnel/core has more features and covers desktop operating systems, but not without native code.
 
-**Choose javaguard** for an in-process, unprivileged JVM tunnel. **Choose chop0/wireguard-java** for
-a small Java TUN client on a Linux or macOS host where root is available. **Choose
-WireGuard/wireguard-android** for the official Android app. **Choose wgtunnel/android** for an Android
+**Choose javaguard** for an in-process, unprivileged JVM tunnel in either direction (client or
+server). **Choose chop0/wireguard-java** for a small Java TUN client on a Linux or macOS host where
+root is available. **Choose WireGuard/wireguard-android** for the official Android app. **Choose wgtunnel/android** for an Android
 client with AmneziaWG and extra features. **Choose wgtunnel/core** for an embeddable Kotlin API with
 AmneziaWG and desktop support when shipping native code is acceptable.
 

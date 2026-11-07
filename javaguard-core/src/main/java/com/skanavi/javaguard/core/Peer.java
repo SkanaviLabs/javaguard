@@ -122,16 +122,20 @@ public final class Peer {
     for (IpPrefix p : prefixes) {
       device.allowedIps.insert(p, this);
     }
+    device.routesChanged();
   }
 
   /** Routes {@code prefix} to this peer, taking it from any other peer. */
   public void addAllowedIp(IpPrefix prefix) {
     device.allowedIps.insert(prefix, this);
+    device.routesChanged();
   }
 
   /** Stops routing {@code prefix} to this peer; returns whether it was routed here. */
   public boolean removeAllowedIp(IpPrefix prefix) {
-    return device.allowedIps.remove(prefix, this);
+    boolean removed = device.allowedIps.remove(prefix, this);
+    device.routesChanged();
+    return removed;
   }
 
   /** The pre-shared key. */

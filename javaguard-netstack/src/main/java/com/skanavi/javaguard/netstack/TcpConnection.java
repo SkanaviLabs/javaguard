@@ -67,6 +67,7 @@ final class TcpConnection {
   private final byte[] localIp;
   private final byte[] remoteIp;
   private final TcpListener listener;
+  private boolean inboundReserved;
   private final ReentrantLock lock = new ReentrantLock();
   private final Condition changed = lock.newCondition();
 
@@ -161,6 +162,7 @@ final class TcpConnection {
     this.localIp = key.localAddress().getAddress();
     this.remoteIp = key.remoteAddress().getAddress();
     this.listener = listener;
+    this.inboundReserved = listener != null; // TcpListener.onSyn took it
     this.state = initial;
     this.iss = stack.randomInt();
     this.sndUna = iss;
@@ -1238,7 +1240,22 @@ final class TcpConnection {
     retransmitTimer.stop();
     persistTimer.stop();
     lingerTimer.start(stack.timeWaitNanos());
+    // TIME_WAIT only re-acknowledges a FIN, so it needs no buffers and no connection slot. A
+    // server that closes first would otherwise hold both for a minute after every request.
+    if (sendBuffer.size() == 0 && receiveBuffer.size() == 0) {
+      sendBuffer.release();
+      receiveBuffer.release();
+      outOfOrder.clear();
+      releaseInbound();
+    }
     changed.signalAll();
+  }
+
+  private void releaseInbound() {
+    if (inboundReserved) {
+      inboundReserved = false;
+      stack.releaseInbound(key.remoteAddress());
+    }
   }
 
   private void enterClosed(IOException reason) {
@@ -1253,6 +1270,7 @@ final class TcpConnection {
     delayedAckTimer.stop();
     keepaliveTimer.stop();
     stack.removeTcp(key, this);
+    releaseInbound();
     if (listener != null && halfOpen) {
       listener.halfOpenClosed();
     }
