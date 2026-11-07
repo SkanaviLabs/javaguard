@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Fixed
+
+- Two TCP ends that filled each other's windows could deadlock until both timed out. An end
+  accepted a pure ACK only inside its receive window, and only at exactly `rcvNxt` when the
+  window was closed. Pure ACKs carried `sndMax`, which lies beyond the window whenever data was
+  sent into room that then filled. Neither end's ACK got through, so neither writer woke to read
+  and reopen its window. An end now takes the ACK and window of any segment at or beyond `rcvNxt`
+  (RFC 9293 3.10.7.4), dropping only its data. Pure ACKs carry `sndUna` while the peer's window is
+  closed, so a strict peer such as Linux accepts them too. Found by stress testing full-duplex
+  echo over the internet and over loopback.
+- A connection whose peer had closed its window and kept answering probes was aborted with
+  `connection timed out` after its retransmission limit. Retransmissions now count against the
+  limit only once the peer stops acknowledging.
+
 ### In progress
 
 - A route-capable server: forwarding for peers to the host network or between peers, IPv4/IPv6
