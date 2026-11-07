@@ -75,8 +75,8 @@ should also accept WireGuard peers.
 
 ```kotlin
 dependencies {
-    implementation("com.skanavi.javaguard:javaguard-proxy:1.1.0")
-    implementation("com.skanavi.javaguard:javaguard-config:1.1.0")
+    implementation("com.skanavi.javaguard:javaguard-proxy:1.1.1")
+    implementation("com.skanavi.javaguard:javaguard-config:1.1.1")
 }
 ```
 
@@ -260,7 +260,7 @@ PersistentKeepalive = 25
 ### Roadmap: route-capable server
 
 The next server step is a route-capable variant that forwards for its peers and to the host network,
-with IPv4/IPv6 route advertisement, ACLs, NAT and DNS. It is in preparation and is not part of 1.1.0.
+with IPv4/IPv6 route advertisement, ACLs, NAT and DNS. It is in preparation and is not part of 1.1.1.
 Until it ships, `TunnelHost` remains a service-level endpoint: it terminates traffic at this JVM and
 does not forward beyond the host, between peers, or to the Internet.
 
@@ -318,7 +318,7 @@ Snapshot: chop0/wireguard-java at `495da11` (October 2023), WireGuard/wireguard-
 | Native code | None in the core; FFM for Linux TUN | JNI for TUN, ChaCha20 and Poly1305 | `libwg-go.so` via the NDK | Go and C JNI via the NDK |
 | Distribution | Maven Central modules | Source and native-image build | Play Store and Maven Central | Play, F-Droid; Maven Central for core |
 | License | MIT | No license file | Apache-2.0 | MIT |
-| Status | 1.1.0, November 2026 | No releases; last commit October 2023 | Actively maintained | 5.8.2 app, 1.9.10 core, October 2026 |
+| Status | 1.1.1, November 2026 | No releases; last commit October 2023 | Actively maintained | 5.8.2 app, 1.9.10 core, October 2026 |
 
 **chop0/wireguard-java.** It implements WireGuard in Java, but relies on a TUN device and the OS
 TCP/IP stack. Root is required, and there is no userspace netstack, proxy, UAPI, keygen or published
