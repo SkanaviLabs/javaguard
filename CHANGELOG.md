@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### In progress
+
+- A route-capable server: forwarding for peers to the host network or between peers, IPv4/IPv6
+  route advertisement, ACL/NAT and DNS design. This is not part of 1.0.0, 1.1.0 or 1.1.1; the
+  `TunnelHost` remains a service-level endpoint with no forwarding beyond the host.
+
+## 1.1.1 (2026-11-07)
+
 ### Fixed
 
 - Two TCP ends that filled each other's windows could deadlock until both timed out. An end
@@ -15,12 +23,6 @@
 - A connection whose peer had closed its window and kept answering probes was aborted with
   `connection timed out` after its retransmission limit. Retransmissions now count against the
   limit only once the peer stops acknowledging.
-
-### In progress
-
-- A route-capable server: forwarding for peers to the host network or between peers, IPv4/IPv6
-  route advertisement, ACL/NAT and DNS design. This is not part of 1.0.0 or 1.1.0; the 1.1.0
-  `TunnelHost` remains a service-level endpoint with no forwarding beyond the host.
 
 ## 1.1.0 (2026-11-07)
 
