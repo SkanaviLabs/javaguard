@@ -96,6 +96,9 @@ during Phase 8 with no findings:
 
 ## Known limitations
 
+- 1.1.0 `TunnelHost` is a service-level endpoint and does not forward beyond the host. A
+  route-capable server is in preparation; IP forwarding, ACLs, NAT and DNS will need a separate
+  threat model before release.
 - TCP buffers are allocated up front: about 512 KiB per connection, including half-open ones. An
   authenticated peer can make the netstack hold up to 256 half-open connections per listener
   (about 128 MiB).

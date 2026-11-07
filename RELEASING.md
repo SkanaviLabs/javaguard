@@ -1,6 +1,6 @@
 # Releasing to Maven Central
 
-javaguard publishes seven artifacts under `com.skanavi.javaguard` through the
+javaguard publishes eight artifacts under `com.skanavi.javaguard` through the
 [Central Portal](https://central.sonatype.com):
 
 - `javaguard-crypto`
@@ -43,7 +43,7 @@ manual steps.
    ./gradlew clean build interopTest
    ```
 
-2. Set the version in `gradle.properties` (for example `version=1.0.0`) and date the entry in
+2. Set the version in `gradle.properties` (for example `version=1.1.0`) and date the entry in
    `CHANGELOG.md`.
 3. Build, sign, verify and zip the bundle. The simplest way signs with your local `gpg`, which
    asks for the passphrase itself:
@@ -82,11 +82,11 @@ manual steps.
    `./gradlew :javaguard-cli:distZip` first; the zip is in `javaguard-cli/build/distributions/`.
 
    ```bash
-   git tag -s v1.0.0 -m "javaguard 1.0.0"
+   git tag -s v1.1.0 -m "javaguard 1.1.0"
    ```
 
    ```bash
-   git push origin v1.0.0
+   git push origin v1.1.0
    ```
 
 ## Checking a bundle without publishing

@@ -70,12 +70,13 @@ suites, that scoping is the point; a process-wide tunnel would be a bug.
 | `javaguard-cli` | `javaguard genkey`, `pubkey`, `genpsk`, `up <file.conf> [--proxy port]` |
 
 Most applications depend on `javaguard-proxy` and `javaguard-config`; together they pull in
-`javaguard-netstack`, `javaguard-core` and `javaguard-crypto`.
+`javaguard-netstack`, `javaguard-core` and `javaguard-crypto`. Add `javaguard-server` when the JVM
+should also accept WireGuard peers.
 
 ```kotlin
 dependencies {
-    implementation("com.skanavi.javaguard:javaguard-proxy:1.0.0")
-    implementation("com.skanavi.javaguard:javaguard-config:1.0.0")
+    implementation("com.skanavi.javaguard:javaguard-proxy:1.1.0")
+    implementation("com.skanavi.javaguard:javaguard-config:1.1.0")
 }
 ```
 
@@ -124,8 +125,8 @@ HttpClient http = proxy.httpClientBuilder().build();           // java.net.http
 Socket socket = proxy.socketFactory().createSocket("db.internal", 5432);
 ```
 
-To leave through a SOCKS5 proxy inside the tunnel, such as a VPN provider's proxy on another relay,
-set an upstream. Clients of both the SOCKS5 and HTTP sides work unchanged:
+Since 1.1.0, to leave through a SOCKS5 proxy inside the tunnel, such as a VPN provider's proxy on
+another relay, set an upstream. Clients of both the SOCKS5 and HTTP sides work unchanged:
 
 ```java
 LocalProxy proxy = LocalProxy.builder(stack)
@@ -194,7 +195,7 @@ Device device = Device.builder().privateKey(key).bind(UdpBind.open(0)).tun(tun).
 
 ## Serving peers
 
-`TunnelHost` makes the JVM a WireGuard server. Any WireGuard client can connect, including Linux
+`TunnelHost` (1.1.0) makes the JVM a WireGuard server. Any WireGuard client can connect, including Linux
 `wg-quick`, but it reaches only the ports opened here. The network stack ends traffic rather than
 routing it, so peers cannot reach each other, the host's network or the Internet.
 
@@ -256,6 +257,13 @@ AllowedIPs = 10.0.0.1/32
 PersistentKeepalive = 25
 ```
 
+### Roadmap: route-capable server
+
+The next server step is a route-capable variant that forwards for its peers and to the host network,
+with IPv4/IPv6 route advertisement, ACLs, NAT and DNS. It is in preparation and is not part of 1.1.0.
+Until it ships, `TunnelHost` remains a service-level endpoint: it terminates traffic at this JVM and
+does not forward beyond the host, between peers, or to the Internet.
+
 ## Design notes
 
 - **Threads:** each device has a UDP receive thread, a tun thread, a handshake worker, a timer
@@ -299,18 +307,18 @@ Snapshot: chop0/wireguard-java at `495da11` (October 2023), WireGuard/wireguard-
 
 | | **javaguard** | **[chop0/wireguard-java](https://github.com/chop0/wireguard-java)** | **[WireGuard/wireguard-android](https://github.com/WireGuard/wireguard-android)** | **[wgtunnel/android](https://github.com/wgtunnel/android)** + **[core](https://github.com/wgtunnel/core)** |
 |---|---|---|---|---|
-| Type | JVM library and CLI | JVM library and CLI | Official Android app plus `tunnel` library | Android app; core library for Android and JVM/desktop |
+| Type | JVM library and CLI; client and server | JVM library and CLI | Official Android app plus `tunnel` library | Android app; core library for Android and JVM/desktop |
 | Protocol engine | Java | Java | Go (`wireguard-go`) or the kernel module | Go (`amneziawg-go`) via JNI |
 | Runtime | Java 25+, any OS with a JVM | Java 21 with preview features, Linux and macOS | Android 8.0+ | Android 8.0+; core also JDK 21 desktop |
 | Privileges | None; `CAP_NET_ADMIN` only for `--tun` | Root (TUN and interface setup) | None; root optional for the kernel backend | None on Android; root/admin on desktop |
-| Tunnel model | In-process; optional Linux TUN | Host-wide TUN | Android `VpnService` | Android `VpnService`; host TUN on desktop |
+| Tunnel model | In-process client and server; optional Linux TUN | Host-wide TUN | Android `VpnService` | Android `VpnService`; host TUN on desktop |
 | TCP/IP stack | Userspace, in Java | Host kernel | Android OS stack | Android OS stack; gVisor in proxy mode |
-| Proxy | SOCKS5 and HTTP | — | — | SOCKS5 and HTTP |
+| Proxy | SOCKS5 and HTTP, optionally through an upstream SOCKS5 | — | — | SOCKS5 and HTTP |
 | Config | wg-quick, UAPI, stock `wg` | A subset of wg-quick | wg-quick in the app | wg-quick, AmneziaWG, UAPI |
 | Native code | None in the core; FFM for Linux TUN | JNI for TUN, ChaCha20 and Poly1305 | `libwg-go.so` via the NDK | Go and C JNI via the NDK |
 | Distribution | Maven Central modules | Source and native-image build | Play Store and Maven Central | Play, F-Droid; Maven Central for core |
 | License | MIT | No license file | Apache-2.0 | MIT |
-| Status | 1.0.0, November 2026 | No releases; last commit October 2023 | Actively maintained | 5.8.2 app, 1.9.10 core, October 2026 |
+| Status | 1.1.0, November 2026 | No releases; last commit October 2023 | Actively maintained | 5.8.2 app, 1.9.10 core, October 2026 |
 
 **chop0/wireguard-java.** It implements WireGuard in Java, but relies on a TUN device and the OS
 TCP/IP stack. Root is required, and there is no userspace netstack, proxy, UAPI, keygen or published
@@ -337,9 +345,9 @@ proxy mode and desktop TUN support, but still needs JDK 21, a Go/C toolchain, na
 root or administrator rights for desktop VPN mode. javaguard is pure Java with a Java userspace stack;
 wgtunnel/core has more features and covers desktop operating systems, but not without native code.
 
-**Choose javaguard** for an in-process, unprivileged JVM tunnel. **Choose chop0/wireguard-java** for
-a small Java TUN client on a Linux or macOS host where root is available. **Choose
-WireGuard/wireguard-android** for the official Android app. **Choose wgtunnel/android** for an Android
+**Choose javaguard** for an in-process, unprivileged JVM tunnel in either direction (client or
+server). **Choose chop0/wireguard-java** for a small Java TUN client on a Linux or macOS host where
+root is available. **Choose WireGuard/wireguard-android** for the official Android app. **Choose wgtunnel/android** for an Android
 client with AmneziaWG and extra features. **Choose wgtunnel/core** for an embeddable Kotlin API with
 AmneziaWG and desktop support when shipping native code is acceptable.
 

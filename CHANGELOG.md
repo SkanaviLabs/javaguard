@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### In progress
+
+- A route-capable server: forwarding for peers to the host network or between peers, IPv4/IPv6
+  route advertisement, ACL/NAT and DNS design. This is not part of 1.0.0 or 1.1.0; the 1.1.0
+  `TunnelHost` remains a service-level endpoint with no forwarding beyond the host.
+
+## 1.1.0 (2026-11-07)
+
 ### Added
 
 - `javaguard-server`: `TunnelHost`, a WireGuard server inside a JVM. Peers reach only the ports it
