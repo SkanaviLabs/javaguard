@@ -111,6 +111,7 @@ final class TcpConnection {
   private int rttSeq;
   private long rttStart;
   private int retries;
+  private long lastAckNanos = System.nanoTime(); // when the peer last sent an acceptable ACK
   private long persistBackoff;
 
   // Receive side.
@@ -543,6 +544,18 @@ final class TcpConnection {
     if (!acceptable(seg.seq(), segLen)) {
       if (state == State.SYN_RECEIVED && seg.has(SYN) && !seg.has(ACK) && seg.seq() == rcvNxt - 1) {
         transmit(iss, SYN | ACK, null, 0, 0); // retransmitted SYN: resend our SYN-ACK
+      } else if (aheadOfWindowAck(seg)) {
+        // RFC 9293 3.10.7.4: when the window has closed, "special allowance should be made to
+        // accept valid ACKs"; the same holds for a window that shrank under data already sent.
+        // Ignoring them deadlocks two ends that have filled each other's windows: the peer's ACK
+        // is the only thing that can unblock our writer, whose reading would reopen the window.
+        // Take the ACK and window, drop the data.
+        if (processAck(seg) && state != State.CLOSED) {
+          if (segLen > 0) {
+            sendAck(); // the data was dropped: repeat our window
+          }
+          output();
+        }
       } else if (!seg.has(RST)) {
         sendAck();
       }
@@ -603,6 +616,24 @@ final class TcpConnection {
     }
   }
 
+  /**
+   * Whether an unacceptable segment still carries an ACK to take: one at or beyond rcvNxt but
+   * outside our window, as when the peer sent into room we advertised and the window then filled. A
+   * pure ACK from the peer carries its sndMax, which never lies below what we received, or its
+   * sndUna while our window is closed. Segments behind rcvNxt are stale. The ACK field itself is
+   * still checked by {@link #processAck}.
+   */
+  private boolean aheadOfWindowAck(TcpSegment seg) {
+    if (!seg.has(ACK) || seg.has(SYN) || seg.has(RST)) {
+      return false;
+    }
+    return switch (state) {
+      case ESTABLISHED, CLOSE_WAIT, FIN_WAIT_1, FIN_WAIT_2, CLOSING, LAST_ACK ->
+          le(rcvNxt, seg.seq()) && lt(seg.seq(), rcvNxt + BUFFER_SIZE);
+      default -> false;
+    };
+  }
+
   private boolean acceptable(int seq, int segLen) {
     int window = receiveBuffer.free();
     if (segLen == 0) {
@@ -625,6 +656,7 @@ final class TcpConnection {
       sendAck(); // acknowledges something we never sent
       return false;
     }
+    lastAckNanos = System.nanoTime();
     int previousWindow = sndWnd;
     if (sackOk && seg.sackBlocks() != null) {
       updateScoreboard(seg.sackBlocks());
@@ -1080,9 +1112,19 @@ final class TcpConnection {
   }
 
   private void sendAck() {
-    // Pure ACKs carry sndMax, not a rewound sndNxt: a sequence number below what the peer already
-    // received would make it discard the segment, ACK field included (BSD tcp_output does this).
-    transmit(sndMax, ACK, null, 0, 0);
+    transmit(ackSeq(), ACK, null, 0, 0);
+  }
+
+  /**
+   * The sequence number for a pure ACK. It is sndMax, not a rewound sndNxt: a sequence number below
+   * what the peer already received would make it discard the segment, ACK field included (BSD
+   * tcp_output does this), and sndMax never is. The exception is a closed peer window: a strict
+   * receiver then takes an ACK only at exactly its rcvNxt (RFC 9293 3.10.7.4), so sndMax is
+   * discarded whenever we sent past a window that then closed. sndUna is the best estimate of that
+   * rcvNxt, as in Linux's tcp_acceptable_seq. If it is stale, the peer's answer refreshes it.
+   */
+  private int ackSeq() {
+    return sndWnd == 0 ? sndUna : sndMax;
   }
 
   private void maybeSendWindowUpdate() {
@@ -1160,7 +1202,11 @@ final class TcpConnection {
           if (sndUna == sndMax) {
             return;
           }
-          if (++retries > DATA_RETRIES) {
+          // A peer that closes its window and keeps acknowledging is alive: these retransmissions
+          // are window probes, and the connection must not time out while it answers them
+          // (as Linux's tcp_retransmit_timer). It does time out once the peer falls silent.
+          boolean probing = sndWnd == 0 && System.nanoTime() - lastAckNanos < 2 * MAX_RTO;
+          if (!probing && ++retries > DATA_RETRIES) {
             abortLocked(new SocketTimeoutException("connection timed out"));
             return;
           }
