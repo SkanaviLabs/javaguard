@@ -12,6 +12,10 @@
   changes to peers and allowed IPs, including those made through UAPI.
 - `Netstack.Builder.tcpMaxInbound` and `tcpMaxInboundPerRemote` limit inbound TCP connections, and
   `Netstack.refusedTcpConnections` counts those refused. Both limits are off by default.
+- `LocalProxy.Builder.upstreamSocks5` sends TCP from both the SOCKS5 and HTTP sides through a SOCKS5
+  proxy reached inside the tunnel, with optional username/password authentication. Target host
+  names go to the upstream unresolved, UDP ASSOCIATE is refused, and a failed upstream fails the
+  connection rather than dialing the target directly.
 
 ### Changed
 

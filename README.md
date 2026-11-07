@@ -124,6 +124,19 @@ HttpClient http = proxy.httpClientBuilder().build();           // java.net.http
 Socket socket = proxy.socketFactory().createSocket("db.internal", 5432);
 ```
 
+To leave through a SOCKS5 proxy inside the tunnel, such as a VPN provider's proxy on another relay,
+set an upstream. Clients of both the SOCKS5 and HTTP sides work unchanged:
+
+```java
+LocalProxy proxy = LocalProxy.builder(stack)
+    .upstreamSocks5("10.64.0.1", 1080)                         // or add a user and password
+    .build();
+```
+
+Target host names then go to the upstream unresolved, so it resolves them rather than the tunnel's
+DNS. UDP ASSOCIATE is refused, and if the upstream fails the connection fails, so traffic never
+leaves by another route.
+
 Without a network stack, pass a `PacketPipe` as the tun and exchange raw IP packets with
 `send`/`receive`.
 
